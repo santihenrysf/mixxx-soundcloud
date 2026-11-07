@@ -45,7 +45,7 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
 
       - name: Compiler cache (sccache)
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Build environment name
         shell: cmd
