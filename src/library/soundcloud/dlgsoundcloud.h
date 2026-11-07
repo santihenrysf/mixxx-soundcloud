@@ -40,6 +40,8 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
     void onShow() override;
     bool hasFocus() const override;
     void setFocus() override;
+    bool loadSelectedToGroup(const QString& group, bool play) override;
+    bool activateSelected() override;
 
   signals:
     void loadTrack(TrackPointer pTrack);
@@ -69,6 +71,7 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
         AutoDeck,
         Deck1,
         Deck2,
+        Group, // deck/sampler pedido por un controlador (ver m_groupTargets)
     };
     enum class ListKind {
         Tracks,
@@ -142,6 +145,7 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
     QHash<QString, QPixmap> m_artwork;       // url del tema -> portada
     QHash<QString, int> m_state;             // url -> estado de descarga
     QHash<QString, int> m_progress;          // url -> % descargado
+    QHash<QString, QPair<QString, bool>> m_groupTargets; // url -> (grupo, play)
     QStringList m_sessionDownloads;          // orden de la pagina Descargas
     QList<QPair<QString, After>> m_queue;
     QString m_currentUrl;

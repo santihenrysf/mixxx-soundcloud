@@ -40,6 +40,18 @@ class LibraryView {
     /// the selected track. Does nothing otherwise.
     virtual void assignPreviousTrackColor() {
     }
+    /// Para vistas que no son una tabla de tracks (ej. SoundCloud):
+    /// cargar el elemento seleccionado en un deck desde un controlador.
+    /// Devuelve true si la vista lo manejo.
+    virtual bool loadSelectedToGroup(const QString& group, bool play) {
+        Q_UNUSED(group);
+        Q_UNUSED(play);
+        return false;
+    }
+    /// Accion principal sobre el elemento seleccionado ([Library],GoToItem).
+    virtual bool activateSelected() {
+        return false;
+    }
     virtual void assignNextTrackColor() {
     }
 };

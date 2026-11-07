@@ -27,6 +27,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScroller>
 #include <QSet>
 #include <QStandardPaths>
 #include <QStyledItemDelegate>
@@ -469,6 +470,8 @@ DlgSoundCloud::DlgSoundCloud(WLibrary* parent,
     m_pTable->horizontalHeader()->setSectionResizeMode(kColAction, QHeaderView::Fixed);
     m_pTable->setColumnWidth(kColDuration, 70);
     m_pTable->setColumnWidth(kColAction, 150);
+    // Pantallas tactiles: desplazamiento con el dedo (el mouse sigue arrastrando a los decks)
+    QScroller::grabGesture(m_pTable->viewport(), QScroller::TouchGesture);
     m_pTable->setItemDelegateForColumn(kColTrack, new TrackDelegate(m_pTable));
     m_pTable->setItemDelegateForColumn(kColAction, new ActionDelegate(m_pTable));
     pMain->addWidget(m_pTable, 1);
@@ -542,6 +545,32 @@ void DlgSoundCloud::setFocus() {
     } else {
         m_pTable->setFocus();
     }
+}
+
+// ----------------------------------------------------------- controladores
+
+bool DlgSoundCloud::loadSelectedToGroup(const QString& group, bool play) {
+    const QList<int> rows = selectedRows();
+    int row = rows.isEmpty() ? m_pTable->currentRow() : rows.first();
+    if (row < 0) {
+        return false;
+    }
+    const QTableWidgetItem* pItem = m_pTable->item(row, kColTrack);
+    if (!pItem) {
+        return false;
+    }
+    m_groupTargets.insert(pItem->data(kUrlRole).toString(), qMakePair(group, play));
+    enqueue(row, After::Group);
+    return true;
+}
+
+bool DlgSoundCloud::activateSelected() {
+    const int row = m_pTable->currentRow();
+    if (row < 0) {
+        return false;
+    }
+    enqueue(row, After::AutoDeck);
+    return true;
 }
 
 // ------------------------------------------------------------------ rutas
@@ -1204,6 +1233,13 @@ void DlgSoundCloud::handleAfter(const QString& url, After after) {
     case After::Deck2:
         emit loadTrackToPlayer(pTrack, QStringLiteral("[Channel2]"), false);
         break;
+    case After::Group: {
+        const auto target = m_groupTargets.take(url);
+        if (!target.first.isEmpty()) {
+            emit loadTrackToPlayer(pTrack, target.first, target.second);
+        }
+        break;
+    }
     case After::Nothing:
         break;
     }

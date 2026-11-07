@@ -608,6 +608,8 @@ void LibraryControl::slotLoadSelectedTrackToGroup(const QString& group, bool pla
     WTrackTableView* pTrackTableView = m_pLibraryWidget->getCurrentTrackTableView();
     if (pTrackTableView) {
         pTrackTableView->loadSelectedTrackToGroup(group, play);
+    } else if (LibraryView* pView = m_pLibraryWidget->getActiveView()) {
+        pView->loadSelectedToGroup(group, play);
     }
 }
 
@@ -619,6 +621,8 @@ void LibraryControl::slotLoadSelectedIntoFirstStopped(double v) {
     WTrackTableView* pTrackTableView = m_pLibraryWidget->getCurrentTrackTableView();
     if (pTrackTableView) {
         pTrackTableView->activateSelectedTrack();
+    } else if (LibraryView* pView = m_pLibraryWidget->getActiveView()) {
+        pView->activateSelected();
     }
 }
 
@@ -1032,6 +1036,8 @@ void LibraryControl::slotGoToItem(double v) {
         WTrackTableView* pTrackTableView = m_pLibraryWidget->getCurrentTrackTableView();
         if (pTrackTableView) {
             pTrackTableView->activateSelectedTrack();
+        } else if (LibraryView* pView = m_pLibraryWidget->getActiveView()) {
+            pView->activateSelected();
         }
         return;
     }
