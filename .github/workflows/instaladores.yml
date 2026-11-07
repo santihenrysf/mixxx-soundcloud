@@ -1,0 +1,134 @@
+# Compila los instaladores de Mixxx + seccion SoundCloud (Windows y macOS).
+name: Instaladores (SoundCloud)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-2022
+            buildenv_script: tools\windows_buildenv.bat
+            buildenv_basepath: C:\buildenv
+            cmake_args: >-
+              -DBULK=ON -DFFMPEG=OFF -DHSS1394=ON -DLOCALECOMPARE=ON -DMAD=ON
+              -DMEDIAFOUNDATION=ON -DMODPLUG=ON -DQT6=ON -DWAVPACK=ON
+              -DVCPKG_TARGET_TRIPLET=x64-windows-release
+            cpack_generator: WIX
+            artifact_name: Mixxx-SoundCloud-Windows
+            artifact_path: build/*.msi
+          - name: macOS Apple Silicon
+            os: macos-15-intel
+            buildenv_script: tools/macos_arm64-cross-release_buildenv.sh
+            buildenv_basepath: /Users/runner/buildenv
+            cmake_args: >-
+              -DBULK=ON -DCOREAUDIO=ON -DHSS1394=ON -DMACOS_BUNDLE=ON -DMODPLUG=ON
+              -DQT6=ON -DWAVPACK=ON -DVCPKG_TARGET_TRIPLET=arm64-osx-min1100-release
+            cpack_generator: DragNDrop
+            artifact_name: Mixxx-SoundCloud-macOS-AppleSilicon
+            artifact_path: build/*.dmg
+          - name: macOS Intel
+            os: macos-15-intel
+            buildenv_script: tools/macos_release_buildenv.sh
+            buildenv_basepath: /Users/runner/buildenv
+            cmake_args: >-
+              -DBULK=ON -DCOREAUDIO=ON -DHSS1394=ON -DMACOS_BUNDLE=ON -DMODPLUG=ON
+              -DQT6=ON -DWAVPACK=ON -DVCPKG_TARGET_TRIPLET=x64-osx-min1100-release
+            cpack_generator: DragNDrop
+            artifact_name: Mixxx-SoundCloud-macOS-Intel
+            artifact_path: build/*.dmg
+
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 330
+    env:
+      BUILDENV_BASEPATH: ${{ matrix.buildenv_basepath }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Ensure tags are fetched
+        run: git fetch origin --force --tags
+
+      - name: Set up cmake
+        uses: jwlawson/actions-setup-cmake@v2.2
+        with:
+          cmake-version: "3.21.x"
+
+      - name: "[Windows] Set up MSVC Developer Command Prompt"
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: "[macOS] Install ccache"
+        if: runner.os == 'macOS'
+        run: brew install ccache
+
+      - name: "[Windows] Set up build environment"
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: ${{ matrix.buildenv_script }} setup
+        env:
+          BUILDENV_RELEASE: TRUE
+
+      - name: "[macOS] Set up build environment"
+        if: runner.os == 'macOS'
+        run: ${{ matrix.buildenv_script }} setup
+
+      - name: Create build directory
+        run: mkdir build
+
+      - name: Configure
+        working-directory: build
+        env:
+          CC: ${{ runner.os == 'Windows' && 'cl' || '' }}
+          CXX: ${{ runner.os == 'Windows' && 'cl' || '' }}
+        run: >-
+          cmake ${{ matrix.cmake_args }} ${{ env.CMAKE_ARGS_EXTRA }}
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_PREFIX_PATH="${{ env.CMAKE_PREFIX_PATH }}"
+          -DWARNINGS_FATAL=OFF
+          -DDEBUG_ASSERTIONS_FATAL=OFF
+          -DBUILD_TESTING=OFF
+          -DBUILD_BENCH=OFF
+          -DBATTERY=ON
+          -DBROADCAST=ON
+          -DDOWNLOAD_MANUAL=OFF
+          -DHID=ON
+          -DKEYFINDER=ON
+          -DLILV=ON
+          -DOPUS=ON
+          -DQTKEYCHAIN=ON
+          -DVINYLCONTROL=ON
+          ..
+
+      - name: Build
+        working-directory: build
+        run: cmake --build . --config RelWithDebInfo
+
+      - name: Package
+        uses: nick-fields/retry@v4
+        with:
+          timeout_minutes: 30
+          max_attempts: 6
+          retry_wait_seconds: 1
+          command: |
+            cd build
+            cpack -G ${{ matrix.cpack_generator }} -V
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_path }}
+          if-no-files-found: error
