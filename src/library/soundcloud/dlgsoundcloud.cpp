@@ -6,26 +6,29 @@
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFont>
+#include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QHeaderView>
-#include <QIcon>
 #include <QInputDialog>
 #include <QJsonDocument>
-#include <QJsonObject>
 #include <QJsonValue>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QMimeData>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
-#include <QPixmap>
+#include <QPainter>
+#include <QPainterPath>
 #include <QProcessEnvironment>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSet>
 #include <QStandardPaths>
+#include <QStyledItemDelegate>
 #include <QTableWidget>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -46,18 +49,85 @@ const ConfigKey kBridgeDirKey(kConfigGroup, QStringLiteral("BridgeDir"));
 const ConfigKey kDownloadDirKey(kConfigGroup, QStringLiteral("DownloadDir"));
 const ConfigKey kProfileKey(kConfigGroup, QStringLiteral("Profile"));
 
+// Datos guardados en la celda del tema
 constexpr int kUrlRole = Qt::UserRole + 1;
 constexpr int kPathRole = Qt::UserRole + 2;
+constexpr int kArtistRole = Qt::UserRole + 3;
+constexpr int kStateRole = Qt::UserRole + 4;
+constexpr int kProgressRole = Qt::UserRole + 5;
+constexpr int kPreviewRole = Qt::UserRole + 6;
 
-constexpr int kColTitle = 0;
-constexpr int kColArtist = 1;
-constexpr int kColDuration = 2;
-constexpr int kColStatus = 3;
+constexpr int kColTrack = 0;
+constexpr int kColDuration = 1;
+constexpr int kColAction = 2;
 
-const QString kColorOk = QStringLiteral("#3ecf8e");
-const QString kColorRun = QStringLiteral("#ff7a33");
-const QString kColorErr = QStringLiteral("#ff5d5d");
-const QString kColorMuted = QStringLiteral("#8b8b95");
+// Estados de descarga
+constexpr int kStateNone = 0;
+constexpr int kStateQueued = 1;
+constexpr int kStateDownloading = 2;
+constexpr int kStateProcessing = 3;
+constexpr int kStateDone = 4;
+constexpr int kStateError = 5;
+
+// Paleta (oscura, en linea con los skins de Mixxx)
+const QColor kText(0xec, 0xec, 0xee);
+const QColor kMuted(0x8a, 0x8a, 0x93);
+const QColor kSurface(0x26, 0x26, 0x2a);
+const QColor kAccent(0xff, 0x6a, 0x1a);
+const QColor kOk(0x3e, 0xcf, 0x8e);
+const QColor kErr(0xff, 0x5d, 0x5d);
+
+const QString kStyleSheet = QStringLiteral(R"(
+#SoundCloudRoot { background: #151517; }
+#scNav {
+  background: #1c1c1f; border: none; border-radius: 12px; padding: 8px;
+  color: #c9c9cf; font-size: 13px; outline: 0;
+}
+#scNav::item { padding: 9px 10px; border-radius: 8px; margin: 1px 0; }
+#scNav::item:selected { background: #2e2e33; color: #ffffff; }
+#scNav::item:hover:!selected { background: #232327; }
+#scPanel { background: #1c1c1f; border-radius: 12px; }
+#scTitle { color: #ffffff; font-size: 19px; font-weight: 600; }
+#scSubtitle { color: #8a8a93; font-size: 12px; }
+#scSearch, #scCombo {
+  background: #26262a; border: 1px solid #2f2f34; border-radius: 8px;
+  padding: 7px 10px; color: #ececee; font-size: 13px;
+  selection-background-color: #ff6a1a;
+}
+#scSearch:focus, #scCombo:focus { border-color: #ff6a1a; }
+#scCombo QAbstractItemView {
+  background: #1c1c1f; color: #ececee; border: 1px solid #2f2f34;
+  selection-background-color: #2e2e33; outline: 0;
+}
+#scTable {
+  background: transparent; border: none; color: #ececee; outline: 0;
+  selection-background-color: #2a2a2f; alternate-background-color: transparent;
+}
+#scTable::item { border: none; padding: 0; }
+#scTable::item:hover { background: #232327; }
+#scTable::item:selected { background: #2a2a2f; }
+QPushButton[scButton="true"] {
+  background: #26262a; color: #dcdce0; border: 1px solid #2f2f34;
+  border-radius: 8px; padding: 6px 12px; font-size: 12px;
+}
+QPushButton[scButton="true"]:hover { background: #2e2e33; color: #ffffff; }
+QPushButton[scButton="true"]:pressed { background: #34343a; }
+QPushButton[scButton="true"]:disabled { color: #55555c; }
+QPushButton[scPrimary="true"] { background: #ff6a1a; color: #ffffff; border: none; }
+QPushButton[scPrimary="true"]:hover { background: #ff7d36; }
+QPushButton[scLink="true"] {
+  background: transparent; border: none; color: #8a8a93; font-size: 12px;
+  padding: 4px 6px; text-align: left;
+}
+QPushButton[scLink="true"]:hover { color: #ffffff; }
+#scStatus { color: #8a8a93; font-size: 12px; }
+#scProgress { background: #26262a; border: none; border-radius: 2px; max-height: 4px; }
+#scProgress::chunk { background: #ff6a1a; border-radius: 2px; }
+#SoundCloudRoot QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }
+#SoundCloudRoot QScrollBar::handle:vertical { background: #3a3a40; border-radius: 3px; min-height: 30px; }
+#SoundCloudRoot QScrollBar::add-line:vertical, #SoundCloudRoot QScrollBar::sub-line:vertical { height: 0; }
+#SoundCloudRoot QScrollBar::add-page:vertical, #SoundCloudRoot QScrollBar::sub-page:vertical { background: none; }
+)");
 
 QString formatDuration(qint64 ms) {
     const qint64 totalSeconds = ms / 1000;
@@ -73,6 +143,182 @@ ConfigKey downloadedKey(const QString& url) {
     return ConfigKey(kConfigGroup, QStringLiteral("dl_") + key);
 }
 
+QPixmap roundedPixmap(const QPixmap& source, int size, int radius) {
+    QPixmap scaled = source.scaled(size * 2,
+            size * 2,
+            Qt::KeepAspectRatioByExpanding,
+            Qt::SmoothTransformation);
+    QPixmap result(size * 2, size * 2);
+    result.fill(Qt::transparent);
+    QPainter painter(&result);
+    painter.setRenderHint(QPainter::Antialiasing);
+    QPainterPath path;
+    path.addRoundedRect(0, 0, size * 2, size * 2, radius * 2, radius * 2);
+    painter.setClipPath(path);
+    painter.drawPixmap((size * 2 - scaled.width()) / 2, (size * 2 - scaled.height()) / 2, scaled);
+    painter.end();
+    result.setDevicePixelRatio(2.0);
+    return result;
+}
+
+void prepareButton(QPushButton* pButton, const char* role = "scButton") {
+    pButton->setProperty(role, true);
+    if (qstrcmp(role, "scButton") != 0) {
+        pButton->setProperty("scButton", true);
+    }
+    pButton->setCursor(Qt::PointingHandCursor);
+}
+
+/// Pinta la celda del tema: portada redondeada + titulo + artista.
+class TrackDelegate : public QStyledItemDelegate {
+  public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    void paint(QPainter* painter,
+            const QStyleOptionViewItem& option,
+            const QModelIndex& index) const override {
+        QStyleOptionViewItem opt(option);
+        initStyleOption(&opt, index);
+        opt.text.clear();
+        opt.icon = QIcon();
+        const QWidget* pWidget = opt.widget;
+        QStyle* pStyle = pWidget ? pWidget->style() : nullptr;
+        if (pStyle) {
+            pStyle->drawPrimitive(QStyle::PE_PanelItemViewItem, &opt, painter, pWidget);
+        }
+
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing);
+        const QRect r = option.rect;
+        const int cover = 38;
+        const QRect coverRect(r.left() + 10, r.top() + (r.height() - cover) / 2, cover, cover);
+        const QPixmap pixmap = index.data(Qt::DecorationRole).value<QPixmap>();
+        if (!pixmap.isNull()) {
+            painter->drawPixmap(coverRect, pixmap);
+        } else {
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(kSurface);
+            painter->drawRoundedRect(coverRect, 6, 6);
+            painter->setPen(kMuted);
+            painter->drawText(coverRect, Qt::AlignCenter, QString(QChar(0x266A)));
+        }
+
+        const int textLeft = coverRect.right() + 12;
+        const QRect textRect(textLeft, r.top(), r.right() - textLeft - 8, r.height());
+        QFont titleFont = opt.font;
+        titleFont.setPointSizeF(titleFont.pointSizeF() > 0 ? titleFont.pointSizeF() + 0.5 : 10.5);
+        titleFont.setWeight(QFont::DemiBold);
+        QFont artistFont = opt.font;
+        const QFontMetrics titleMetrics(titleFont);
+        const QFontMetrics artistMetrics(artistFont);
+        const int block = titleMetrics.height() + artistMetrics.height() + 2;
+        const int top = r.top() + (r.height() - block) / 2;
+
+        painter->setFont(titleFont);
+        painter->setPen(kText);
+        painter->drawText(QRect(textRect.left(), top, textRect.width(), titleMetrics.height()),
+                Qt::AlignLeft | Qt::AlignVCenter,
+                titleMetrics.elidedText(index.data(Qt::DisplayRole).toString(),
+                        Qt::ElideRight,
+                        textRect.width()));
+
+        QString artist = index.data(kArtistRole).toString();
+        if (index.data(kPreviewRole).toBool()) {
+            artist += QStringLiteral("  ·  solo 30 s");
+        }
+        painter->setFont(artistFont);
+        painter->setPen(kMuted);
+        painter->drawText(QRect(textRect.left(),
+                                  top + titleMetrics.height() + 2,
+                                  textRect.width(),
+                                  artistMetrics.height()),
+                Qt::AlignLeft | Qt::AlignVCenter,
+                artistMetrics.elidedText(artist, Qt::ElideRight, textRect.width()));
+        painter->restore();
+    }
+
+    QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+        QSize size = QStyledItemDelegate::sizeHint(option, index);
+        size.setHeight(56);
+        return size;
+    }
+};
+
+/// Pinta la celda de accion: flecha de descarga, progreso, listo o error.
+class ActionDelegate : public QStyledItemDelegate {
+  public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    void paint(QPainter* painter,
+            const QStyleOptionViewItem& option,
+            const QModelIndex& index) const override {
+        QStyleOptionViewItem opt(option);
+        initStyleOption(&opt, index);
+        opt.text.clear();
+        const QWidget* pWidget = opt.widget;
+        if (pWidget) {
+            pWidget->style()->drawPrimitive(QStyle::PE_PanelItemViewItem, &opt, painter, pWidget);
+        }
+
+        const QModelIndex trackIndex = index.sibling(index.row(), kColTrack);
+        const int state = trackIndex.data(kStateRole).toInt();
+        const int progress = trackIndex.data(kProgressRole).toInt();
+        const QRect r = option.rect.adjusted(10, 0, -12, 0);
+        const bool hovered = option.state & QStyle::State_MouseOver;
+
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing);
+        QFont font = opt.font;
+        painter->setFont(font);
+        switch (state) {
+        case kStateDownloading:
+        case kStateProcessing: {
+            const int barWidth = std::min(90, r.width() - 40);
+            const QRect bar(r.right() - barWidth, r.center().y() - 2, barWidth, 4);
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(kSurface);
+            painter->drawRoundedRect(bar, 2, 2);
+            const int pct = state == kStateProcessing ? 100 : progress;
+            painter->setBrush(kAccent);
+            painter->drawRoundedRect(QRect(bar.left(), bar.top(), bar.width() * pct / 100, 4), 2, 2);
+            painter->setPen(kAccent);
+            painter->drawText(QRect(r.left(), r.top(), bar.left() - r.left() - 8, r.height()),
+                    Qt::AlignRight | Qt::AlignVCenter,
+                    state == kStateProcessing ? QStringLiteral("…") : QStringLiteral("%1%").arg(pct));
+            break;
+        }
+        case kStateQueued:
+            painter->setPen(kMuted);
+            painter->drawText(r, Qt::AlignRight | Qt::AlignVCenter, QObject::tr("En cola"));
+            break;
+        case kStateDone:
+            painter->setPen(kOk);
+            painter->drawText(r, Qt::AlignRight | Qt::AlignVCenter, QStringLiteral("✓  ") + QObject::tr("Listo"));
+            break;
+        case kStateError:
+            painter->setPen(kErr);
+            painter->drawText(r, Qt::AlignRight | Qt::AlignVCenter, QObject::tr("Error · reintentar"));
+            break;
+        default: {
+            // Boton circular de descarga
+            const int d = 26;
+            const QRect circle(r.right() - d, r.center().y() - d / 2, d, d);
+            painter->setPen(QPen(hovered ? kAccent : QColor(0x3a, 0x3a, 0x40), 1.2));
+            painter->setBrush(hovered ? QColor(0xff, 0x6a, 0x1a, 40) : Qt::transparent);
+            painter->drawEllipse(circle);
+            QPen arrow(hovered ? kAccent : kMuted, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+            painter->setPen(arrow);
+            const QPointF c = circle.center();
+            painter->drawLine(QPointF(c.x(), c.y() - 5.5), QPointF(c.x(), c.y() + 4.5));
+            painter->drawLine(QPointF(c.x() - 4, c.y() + 0.5), QPointF(c.x(), c.y() + 4.5));
+            painter->drawLine(QPointF(c.x() + 4, c.y() + 0.5), QPointF(c.x(), c.y() + 4.5));
+            break;
+        }
+        }
+        painter->restore();
+    }
+};
+
 /// Tabla que permite arrastrar los temas ya descargados a los decks.
 class SoundCloudTable : public QTableWidget {
   public:
@@ -87,8 +333,8 @@ class SoundCloudTable : public QTableWidget {
                 continue;
             }
             seenRows.insert(pItem->row());
-            const QTableWidgetItem* pTitle = item(pItem->row(), kColTitle);
-            const QString path = pTitle ? pTitle->data(kPathRole).toString() : QString();
+            const QTableWidgetItem* pTrack = item(pItem->row(), kColTrack);
+            const QString path = pTrack ? pTrack->data(kPathRole).toString() : QString();
             if (!path.isEmpty()) {
                 urls.append(QUrl::fromLocalFile(path));
             }
@@ -110,117 +356,141 @@ DlgSoundCloud::DlgSoundCloud(WLibrary* parent,
         : QWidget(parent),
           m_pConfig(pConfig),
           m_pLibrary(pLibrary),
+          m_page(Page::Search),
           m_pListProcess(nullptr),
           m_listKind(ListKind::Tracks),
           m_pDownloadProcess(nullptr),
           m_pNetwork(new QNetworkAccessManager(this)),
-          m_listGeneration(0),
           m_currentAfter(After::Nothing) {
-    auto* pLayout = new QVBoxLayout(this);
-    pLayout->setContentsMargins(6, 6, 6, 6);
-    pLayout->setSpacing(6);
+    setObjectName(QStringLiteral("SoundCloudRoot"));
+    setAttribute(Qt::WA_StyledBackground, true);
+    setStyleSheet(kStyleSheet);
 
-    // Fila 1: busqueda
-    auto* pSearchRow = new QHBoxLayout();
-    m_pSearchEdit = new QLineEdit(this);
-    m_pSearchEdit->setPlaceholderText(tr("Buscar en SoundCloud (artista, tema...) y Enter"));
+    auto* pRoot = new QHBoxLayout(this);
+    pRoot->setContentsMargins(8, 8, 8, 8);
+    pRoot->setSpacing(8);
+
+    // ---- Menu lateral
+    auto* pSide = new QVBoxLayout();
+    pSide->setSpacing(6);
+    m_pNav = new QListWidget(this);
+    m_pNav->setObjectName(QStringLiteral("scNav"));
+    m_pNav->setFixedWidth(176);
+    m_pNav->setFrameShape(QFrame::NoFrame);
+    m_pNav->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_pNav->addItem(QStringLiteral("⌕   ") + tr("Buscar"));
+    m_pNav->addItem(QStringLiteral("♡   ") + tr("Mis likes"));
+    m_pNav->addItem(QStringLiteral("≡   ") + tr("Mis playlists"));
+    m_pNav->addItem(QStringLiteral("↓   ") + tr("Descargas"));
+    m_pNav->setCurrentRow(0);
+    pSide->addWidget(m_pNav, 1);
+    m_pProfileButton = new QPushButton(tr("Mi perfil de SoundCloud"), this);
+    prepareButton(m_pProfileButton, "scLink");
+    m_pFolderButton = new QPushButton(tr("Carpeta de descargas"), this);
+    prepareButton(m_pFolderButton, "scLink");
+    m_pOpenFolderButton = new QPushButton(tr("Abrir carpeta"), this);
+    prepareButton(m_pOpenFolderButton, "scLink");
+    pSide->addWidget(m_pProfileButton);
+    pSide->addWidget(m_pFolderButton);
+    pSide->addWidget(m_pOpenFolderButton);
+    pRoot->addLayout(pSide);
+
+    // ---- Panel principal
+    auto* pPanel = new QWidget(this);
+    pPanel->setObjectName(QStringLiteral("scPanel"));
+    pPanel->setAttribute(Qt::WA_StyledBackground, true);
+    auto* pMain = new QVBoxLayout(pPanel);
+    pMain->setContentsMargins(16, 14, 16, 10);
+    pMain->setSpacing(8);
+
+    auto* pHeader = new QHBoxLayout();
+    auto* pHeaderText = new QVBoxLayout();
+    pHeaderText->setSpacing(0);
+    m_pTitle = new QLabel(pPanel);
+    m_pTitle->setObjectName(QStringLiteral("scTitle"));
+    m_pSubtitle = new QLabel(pPanel);
+    m_pSubtitle->setObjectName(QStringLiteral("scSubtitle"));
+    pHeaderText->addWidget(m_pTitle);
+    pHeaderText->addWidget(m_pSubtitle);
+    pHeader->addLayout(pHeaderText, 1);
+    m_pDeck1Button = new QPushButton(tr("Deck 1"), pPanel);
+    m_pDeck2Button = new QPushButton(tr("Deck 2"), pPanel);
+    m_pDownloadButton = new QPushButton(tr("Descargar"), pPanel);
+    m_pDownloadAllButton = new QPushButton(tr("Descargar todo"), pPanel);
+    prepareButton(m_pDeck1Button);
+    prepareButton(m_pDeck2Button);
+    prepareButton(m_pDownloadButton);
+    prepareButton(m_pDownloadAllButton, "scPrimary");
+    m_pDeck1Button->setToolTip(tr("Descarga (si hace falta) y carga el tema elegido en el Deck 1"));
+    m_pDeck2Button->setToolTip(tr("Descarga (si hace falta) y carga el tema elegido en el Deck 2"));
+    m_pDownloadButton->setToolTip(tr("Descarga los temas seleccionados"));
+    m_pDownloadAllButton->setToolTip(tr("Descarga toda la lista"));
+    pHeader->addWidget(m_pDeck1Button, 0, Qt::AlignBottom);
+    pHeader->addWidget(m_pDeck2Button, 0, Qt::AlignBottom);
+    pHeader->addWidget(m_pDownloadButton, 0, Qt::AlignBottom);
+    pHeader->addWidget(m_pDownloadAllButton, 0, Qt::AlignBottom);
+    pMain->addLayout(pHeader);
+
+    m_pSearchEdit = new QLineEdit(pPanel);
+    m_pSearchEdit->setObjectName(QStringLiteral("scSearch"));
+    m_pSearchEdit->setPlaceholderText(tr("Buscar en SoundCloud: artista, tema, sello…"));
     m_pSearchEdit->setClearButtonEnabled(true);
-    m_pSearchEdit->setMinimumHeight(30);
-    m_pSearchButton = new QPushButton(tr("Buscar"), this);
-    m_pSearchButton->setMinimumHeight(30);
-    pSearchRow->addWidget(m_pSearchEdit, 1);
-    pSearchRow->addWidget(m_pSearchButton);
-    pLayout->addLayout(pSearchRow);
+    pMain->addWidget(m_pSearchEdit);
 
-    // Fila 2: mi SoundCloud
-    auto* pMineRow = new QHBoxLayout();
-    m_pLikesButton = new QPushButton(tr("Mis likes"), this);
-    m_pPlaylistsButton = new QPushButton(tr("Mis playlists"), this);
-    m_pPlaylistCombo = new QComboBox(this);
-    m_pPlaylistCombo->setMinimumWidth(260);
-    m_pPlaylistCombo->setPlaceholderText(tr("Elegi una playlist..."));
+    m_pPlaylistCombo = new QComboBox(pPanel);
+    m_pPlaylistCombo->setObjectName(QStringLiteral("scCombo"));
+    m_pPlaylistCombo->setPlaceholderText(tr("Elegí una playlist…"));
     m_pPlaylistCombo->setVisible(false);
-    m_pProfileButton = new QPushButton(tr("Mi perfil..."), this);
-    m_pProfileButton->setToolTip(tr("Tu perfil de SoundCloud (link o nombre de usuario)"));
-    m_pTitleLabel = new QLabel(this);
-    QFont titleFont = m_pTitleLabel->font();
-    titleFont.setBold(true);
-    m_pTitleLabel->setFont(titleFont);
-    pMineRow->addWidget(m_pLikesButton);
-    pMineRow->addWidget(m_pPlaylistsButton);
-    pMineRow->addWidget(m_pPlaylistCombo);
-    pMineRow->addWidget(m_pTitleLabel, 1);
-    pMineRow->addWidget(m_pProfileButton);
-    pLayout->addLayout(pMineRow);
+    pMain->addWidget(m_pPlaylistCombo);
 
-    // Resultados
-    m_pTable = new SoundCloudTable(0, 4, this);
-    m_pTable->setHorizontalHeaderLabels(
-            {tr("Tema"), tr("Artista"), tr("Duracion"), tr("Estado")});
+    m_pTable = new SoundCloudTable(0, 3, pPanel);
+    m_pTable->setObjectName(QStringLiteral("scTable"));
+    m_pTable->setFrameShape(QFrame::NoFrame);
     m_pTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_pTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_pTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_pTable->setDragEnabled(true);
     m_pTable->setDragDropMode(QAbstractItemView::DragOnly);
-    m_pTable->setIconSize(QSize(36, 36));
-    m_pTable->verticalHeader()->setVisible(false);
-    m_pTable->verticalHeader()->setDefaultSectionSize(42);
+    m_pTable->setMouseTracking(true);
     m_pTable->setShowGrid(false);
-    m_pTable->setAlternatingRowColors(true);
-    QHeaderView* pHeader = m_pTable->horizontalHeader();
-    pHeader->setSectionResizeMode(kColTitle, QHeaderView::Stretch);
-    pHeader->setSectionResizeMode(kColArtist, QHeaderView::Interactive);
-    pHeader->setSectionResizeMode(kColDuration, QHeaderView::ResizeToContents);
-    pHeader->setSectionResizeMode(kColStatus, QHeaderView::Interactive);
-    m_pTable->setColumnWidth(kColArtist, 200);
-    m_pTable->setColumnWidth(kColStatus, 150);
-    pLayout->addWidget(m_pTable, 1);
+    m_pTable->setWordWrap(false);
+    m_pTable->setFocusPolicy(Qt::StrongFocus);
+    m_pTable->verticalHeader()->setVisible(false);
+    m_pTable->verticalHeader()->setDefaultSectionSize(56);
+    m_pTable->horizontalHeader()->setVisible(false);
+    m_pTable->horizontalHeader()->setSectionResizeMode(kColTrack, QHeaderView::Stretch);
+    m_pTable->horizontalHeader()->setSectionResizeMode(kColDuration, QHeaderView::Fixed);
+    m_pTable->horizontalHeader()->setSectionResizeMode(kColAction, QHeaderView::Fixed);
+    m_pTable->setColumnWidth(kColDuration, 70);
+    m_pTable->setColumnWidth(kColAction, 150);
+    m_pTable->setItemDelegateForColumn(kColTrack, new TrackDelegate(m_pTable));
+    m_pTable->setItemDelegateForColumn(kColAction, new ActionDelegate(m_pTable));
+    pMain->addWidget(m_pTable, 1);
 
-    // Acciones
-    auto* pActions = new QHBoxLayout();
-    m_pDownloadButton = new QPushButton(tr("Descargar seleccion"), this);
-    m_pDownloadAllButton = new QPushButton(tr("Descargar todo"), this);
-    m_pDeck1Button = new QPushButton(tr("Cargar en Deck 1"), this);
-    m_pDeck2Button = new QPushButton(tr("Cargar en Deck 2"), this);
-    m_pFolderButton = new QPushButton(tr("Carpeta..."), this);
-    m_pOpenFolderButton = new QPushButton(tr("Abrir carpeta"), this);
-    m_pDeck1Button->setToolTip(tr("Descarga (si hace falta) y carga en el Deck 1"));
-    m_pDeck2Button->setToolTip(tr("Descarga (si hace falta) y carga en el Deck 2"));
-    m_pFolderButton->setToolTip(tr("Elegir donde se guardan las descargas"));
-    pActions->addWidget(m_pDownloadButton);
-    pActions->addWidget(m_pDownloadAllButton);
-    pActions->addWidget(m_pDeck1Button);
-    pActions->addWidget(m_pDeck2Button);
-    pActions->addStretch(1);
-    pActions->addWidget(m_pFolderButton);
-    pActions->addWidget(m_pOpenFolderButton);
-    pLayout->addLayout(pActions);
-
-    // Estado
-    auto* pStatusRow = new QHBoxLayout();
-    m_pStatusLabel = new QLabel(
-            tr("Busca arriba o abri tus likes / playlists. Doble click en un "
-               "tema: se descarga y se carga en el primer deck libre. Los temas "
-               "descargados se pueden arrastrar a cualquier deck."),
-            this);
+    auto* pFooter = new QHBoxLayout();
+    m_pStatusLabel = new QLabel(pPanel);
+    m_pStatusLabel->setObjectName(QStringLiteral("scStatus"));
     m_pStatusLabel->setWordWrap(true);
-    m_pProgress = new QProgressBar(this);
+    m_pProgress = new QProgressBar(pPanel);
+    m_pProgress->setObjectName(QStringLiteral("scProgress"));
     m_pProgress->setRange(0, 100);
-    m_pProgress->setMaximumWidth(220);
+    m_pProgress->setTextVisible(false);
+    m_pProgress->setFixedWidth(160);
     m_pProgress->setVisible(false);
-    pStatusRow->addWidget(m_pStatusLabel, 1);
-    pStatusRow->addWidget(m_pProgress);
-    pLayout->addLayout(pStatusRow);
+    pFooter->addWidget(m_pStatusLabel, 1);
+    pFooter->addWidget(m_pProgress, 0, Qt::AlignVCenter);
+    pMain->addLayout(pFooter);
 
+    pRoot->addWidget(pPanel, 1);
+
+    connect(m_pNav, &QListWidget::currentRowChanged, this, &DlgSoundCloud::slotNavChanged);
     connect(m_pSearchEdit, &QLineEdit::returnPressed, this, &DlgSoundCloud::slotSearch);
-    connect(m_pSearchButton, &QPushButton::clicked, this, &DlgSoundCloud::slotSearch);
-    connect(m_pLikesButton, &QPushButton::clicked, this, &DlgSoundCloud::slotMyLikes);
-    connect(m_pPlaylistsButton, &QPushButton::clicked, this, &DlgSoundCloud::slotMyPlaylists);
     connect(m_pPlaylistCombo,
             QOverload<int>::of(&QComboBox::activated),
             this,
             &DlgSoundCloud::slotPlaylistChosen);
     connect(m_pProfileButton, &QPushButton::clicked, this, &DlgSoundCloud::slotChangeProfile);
+    connect(m_pTable, &QTableWidget::cellClicked, this, &DlgSoundCloud::slotCellClicked);
     connect(m_pTable,
             &QTableWidget::cellDoubleClicked,
             this,
@@ -234,6 +504,10 @@ DlgSoundCloud::DlgSoundCloud(WLibrary* parent,
     connect(m_pDeck2Button, &QPushButton::clicked, this, &DlgSoundCloud::slotLoadDeck2);
     connect(m_pFolderButton, &QPushButton::clicked, this, &DlgSoundCloud::slotChooseFolder);
     connect(m_pOpenFolderButton, &QPushButton::clicked, this, &DlgSoundCloud::slotOpenFolder);
+
+    setHeader(tr("Buscar"), tr("Encontrá cualquier tema de SoundCloud y llevalo al deck"));
+    setStatus(tr("Doble click en un tema: se descarga y se carga en el primer deck libre. "
+                 "Los descargados se pueden arrastrar a cualquier deck."));
 }
 
 DlgSoundCloud::~DlgSoundCloud() {
@@ -247,15 +521,21 @@ DlgSoundCloud::~DlgSoundCloud() {
 }
 
 void DlgSoundCloud::onShow() {
-    m_pSearchEdit->setFocus();
+    if (m_page == Page::Search) {
+        m_pSearchEdit->setFocus();
+    }
 }
 
 bool DlgSoundCloud::hasFocus() const {
-    return m_pSearchEdit->hasFocus() || m_pTable->hasFocus();
+    return m_pSearchEdit->hasFocus() || m_pTable->hasFocus() || m_pNav->hasFocus();
 }
 
 void DlgSoundCloud::setFocus() {
-    m_pSearchEdit->setFocus();
+    if (m_page == Page::Search) {
+        m_pSearchEdit->setFocus();
+    } else {
+        m_pTable->setFocus();
+    }
 }
 
 // ------------------------------------------------------------------ rutas
@@ -304,7 +584,7 @@ QString DlgSoundCloud::profile(bool askIfMissing) {
         bool ok = false;
         value = QInputDialog::getText(this,
                 tr("Tu SoundCloud"),
-                tr("Pega el link de tu perfil de SoundCloud\n"
+                tr("Pegá el link de tu perfil de SoundCloud\n"
                    "(ej. https://soundcloud.com/tu-usuario) o tu usuario:"),
                 QLineEdit::Normal,
                 QString(),
@@ -323,6 +603,12 @@ QProcessEnvironment DlgSoundCloud::processEnvironment() const {
     env.insert(QStringLiteral("PYTHONIOENCODING"), QStringLiteral("utf-8"));
     env.insert(QStringLiteral("PYTHONUTF8"), QStringLiteral("1"));
     env.insert(QStringLiteral("PYTHONUNBUFFERED"), QStringLiteral("1"));
+#ifdef Q_OS_MACOS
+    // Las apps de macOS arrancan con un PATH minimo: sumar Homebrew (ffmpeg)
+    env.insert(QStringLiteral("PATH"),
+            QStringLiteral("/opt/homebrew/bin:/usr/local/bin:") +
+                    env.value(QStringLiteral("PATH")));
+#endif
     return env;
 }
 
@@ -330,7 +616,7 @@ bool DlgSoundCloud::ensureBridge() {
     if (QFileInfo::exists(bridgeScript())) {
         return true;
     }
-    setStatus(tr("No encuentro scdl_bridge.py en %1. Elegi la carpeta de SCDL.")
+    setStatus(tr("No encuentro scdl_bridge.py en %1. Elegí la carpeta de SCDL.")
                       .arg(QDir::toNativeSeparators(bridgeDir())),
             true);
     const QString dir = QFileDialog::getExistingDirectory(this,
@@ -347,40 +633,63 @@ bool DlgSoundCloud::ensureBridge() {
     return true;
 }
 
-// ------------------------------------------------------------- listados
+// ------------------------------------------------------------- navegacion
+
+void DlgSoundCloud::setHeader(const QString& title, const QString& subtitle) {
+    m_pTitle->setText(title);
+    m_pSubtitle->setText(subtitle);
+}
+
+void DlgSoundCloud::slotNavChanged(int index) {
+    m_page = static_cast<Page>(index);
+    m_pSearchEdit->setVisible(m_page == Page::Search);
+    m_pPlaylistCombo->setVisible(m_page == Page::Playlists && m_pPlaylistCombo->count() > 0);
+    switch (m_page) {
+    case Page::Search:
+        setHeader(tr("Buscar"), tr("Encontrá cualquier tema de SoundCloud y llevalo al deck"));
+        m_pTable->setRowCount(0);
+        m_pSearchEdit->setFocus();
+        if (!m_pSearchEdit->text().trimmed().isEmpty()) {
+            slotSearch();
+        }
+        break;
+    case Page::Likes: {
+        const QString user = profile(true);
+        setHeader(tr("Mis likes"), user.isEmpty() ? tr("Configurá tu perfil abajo a la izquierda") : user);
+        m_pTable->setRowCount(0);
+        if (!user.isEmpty()) {
+            runList({QStringLiteral("likes"), user, QStringLiteral("300")},
+                    ListKind::Tracks,
+                    tr("Cargando tus likes…"));
+        }
+        break;
+    }
+    case Page::Playlists: {
+        const QString user = profile(true);
+        setHeader(tr("Mis playlists"), tr("Elegí una playlist para ver sus temas"));
+        m_pTable->setRowCount(0);
+        if (!user.isEmpty()) {
+            runList({QStringLiteral("playlists"), user},
+                    ListKind::Playlists,
+                    tr("Cargando tus playlists…"));
+        }
+        break;
+    }
+    case Page::Downloads:
+        showDownloadsPage();
+        break;
+    }
+}
 
 void DlgSoundCloud::slotSearch() {
     const QString query = m_pSearchEdit->text().trimmed();
     if (query.isEmpty()) {
         return;
     }
-    m_pPlaylistCombo->setVisible(false);
-    m_pTitleLabel->setText(tr("Resultados: %1").arg(query));
+    setHeader(tr("Resultados"), QStringLiteral("“%1”").arg(query));
     runList({QStringLiteral("search"), query, QStringLiteral("40")},
             ListKind::Tracks,
-            tr("Buscando \"%1\"...").arg(query));
-}
-
-void DlgSoundCloud::slotMyLikes() {
-    const QString user = profile(true);
-    if (user.isEmpty()) {
-        return;
-    }
-    m_pPlaylistCombo->setVisible(false);
-    m_pTitleLabel->setText(tr("Mis likes"));
-    runList({QStringLiteral("likes"), user, QStringLiteral("300")},
-            ListKind::Tracks,
-            tr("Cargando tus likes..."));
-}
-
-void DlgSoundCloud::slotMyPlaylists() {
-    const QString user = profile(true);
-    if (user.isEmpty()) {
-        return;
-    }
-    runList({QStringLiteral("playlists"), user},
-            ListKind::Playlists,
-            tr("Cargando tus playlists..."));
+            tr("Buscando “%1”…").arg(query));
 }
 
 void DlgSoundCloud::slotPlaylistChosen(int index) {
@@ -388,10 +697,9 @@ void DlgSoundCloud::slotPlaylistChosen(int index) {
     if (url.isEmpty()) {
         return;
     }
-    m_pTitleLabel->setText(m_pPlaylistCombo->itemText(index));
-    runList({QStringLiteral("playlist"), url},
-            ListKind::Tracks,
-            tr("Cargando playlist..."));
+    setHeader(m_pPlaylistCombo->itemText(index).section(QStringLiteral("  ("), 0, 0),
+            tr("Playlist"));
+    runList({QStringLiteral("playlist"), url}, ListKind::Tracks, tr("Cargando playlist…"));
 }
 
 void DlgSoundCloud::slotChangeProfile() {
@@ -410,10 +718,24 @@ void DlgSoundCloud::slotChangeProfile() {
 }
 
 void DlgSoundCloud::setBusy(bool busy) {
-    m_pSearchButton->setEnabled(!busy);
-    m_pLikesButton->setEnabled(!busy);
-    m_pPlaylistsButton->setEnabled(!busy);
+    m_pNav->setEnabled(!busy);
+    m_pSearchEdit->setEnabled(!busy);
 }
+
+void DlgSoundCloud::showDownloadsPage() {
+    setHeader(tr("Descargas"),
+            m_sessionDownloads.isEmpty()
+                    ? tr("Todavía no descargaste nada en esta sesión")
+                    : tr("%1 temas en esta sesión").arg(m_sessionDownloads.size()));
+    QJsonArray tracks;
+    for (const QString& url : std::as_const(m_sessionDownloads)) {
+        tracks.append(m_trackInfo.value(url));
+    }
+    fillTracks(tracks);
+    setStatus(tr("Carpeta: %1").arg(QDir::toNativeSeparators(downloadDir())));
+}
+
+// ------------------------------------------------------------- listados
 
 void DlgSoundCloud::runList(const QStringList& args, ListKind kind, const QString& busyText) {
     if (!ensureBridge()) {
@@ -433,8 +755,8 @@ void DlgSoundCloud::runList(const QStringList& args, ListKind kind, const QStrin
     connect(m_pListProcess, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
         if (error == QProcess::FailedToStart) {
             setBusy(false);
-            setStatus(tr("No pude iniciar Python (%1). Abri SCDL.vbs una vez "
-                         "para que se instale.")
+            setStatus(tr("No pude iniciar Python (%1). Abrí SCDL una vez para que "
+                         "se instale.")
                               .arg(QDir::toNativeSeparators(pythonPath())),
                     true);
         }
@@ -478,7 +800,21 @@ void DlgSoundCloud::slotListFinished(int exitCode, QProcess::ExitStatus exitStat
         setStatus(tr("No se pudo cargar. %1").arg(detail), true);
         return;
     }
-    fillTracks(result.value(QStringLiteral("results")).toArray());
+    const QJsonArray results = result.value(QStringLiteral("results")).toArray();
+    fillTracks(results);
+    if (m_page == Page::Likes) {
+        setHeader(tr("Mis likes"), tr("%1 temas").arg(results.size()));
+    } else if (m_page == Page::Playlists) {
+        m_pSubtitle->setText(tr("Playlist  ·  %1 temas").arg(results.size()));
+    } else if (m_page == Page::Search) {
+        m_pSubtitle->setText(QStringLiteral("“%1”  ·  %2 temas")
+                                     .arg(m_pSearchEdit->text().trimmed())
+                                     .arg(results.size()));
+    }
+    setStatus(results.isEmpty()
+                    ? tr("Sin resultados.")
+                    : tr("Doble click: descargar y cargar en el primer deck libre  ·  "
+                         "click en ↓: solo descargar  ·  arrastrá los listos a un deck"));
 }
 
 void DlgSoundCloud::fillPlaylists(const QJsonArray& playlists) {
@@ -493,81 +829,75 @@ void DlgSoundCloud::fillPlaylists(const QJsonArray& playlists) {
     m_pPlaylistCombo->setCurrentIndex(-1);
     m_pPlaylistCombo->setVisible(true);
     if (playlists.isEmpty()) {
-        setStatus(tr("No encontre playlists publicas en tu perfil."));
+        setStatus(tr("No encontré playlists públicas en tu perfil."));
     } else {
-        setStatus(tr("%1 playlists. Elegi una en la lista.").arg(playlists.size()));
+        setStatus(tr("%1 playlists. Elegí una en la lista.").arg(playlists.size()));
         m_pPlaylistCombo->showPopup();
     }
 }
 
 void DlgSoundCloud::fillTracks(const QJsonArray& results) {
-    ++m_listGeneration;
     m_pTable->setRowCount(0);
     m_pTable->setRowCount(static_cast<int>(results.size()));
     int row = 0;
     for (const QJsonValue& value : results) {
         const QJsonObject track = value.toObject();
         const QString url = track.value(QStringLiteral("url")).toString();
-        const QString title = track.value(QStringLiteral("title")).toString();
-        m_titles.insert(url, title);
+        m_trackInfo.insert(url, track);
 
-        auto* pTitle = new QTableWidgetItem(title);
-        pTitle->setData(kUrlRole, url);
-        pTitle->setToolTip(url);
-        QString artist = track.value(QStringLiteral("artist")).toString();
-        if (track.value(QStringLiteral("preview")).toBool()) {
-            artist += tr("  (solo 30 s)");
-        }
+        auto* pTrack = new QTableWidgetItem(track.value(QStringLiteral("title")).toString());
+        pTrack->setData(kUrlRole, url);
+        pTrack->setData(kArtistRole, track.value(QStringLiteral("artist")).toString());
+        pTrack->setData(kPreviewRole, track.value(QStringLiteral("preview")).toBool());
+        pTrack->setToolTip(url);
         auto* pDuration = new QTableWidgetItem(formatDuration(static_cast<qint64>(
                 track.value(QStringLiteral("duration_ms")).toDouble())));
         pDuration->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        m_pTable->setItem(row, kColTitle, pTitle);
-        m_pTable->setItem(row, kColArtist, new QTableWidgetItem(artist));
+        pDuration->setForeground(kMuted);
+        auto* pAction = new QTableWidgetItem();
+        pAction->setToolTip(tr("Descargar"));
+        m_pTable->setItem(row, kColTrack, pTrack);
         m_pTable->setItem(row, kColDuration, pDuration);
-        m_pTable->setItem(row, kColStatus, new QTableWidgetItem());
+        m_pTable->setItem(row, kColAction, pAction);
 
         const QString path = pathForUrl(url);
         if (!path.isEmpty()) {
-            pTitle->setData(kPathRole, path);
-            setUrlStatus(url, tr("En biblioteca"), kColorOk);
+            pTrack->setData(kPathRole, path);
+            m_state.insert(url, kStateDone);
         }
-        loadArtwork(row, track.value(QStringLiteral("artwork")).toString());
+        pTrack->setData(kStateRole, m_state.value(url, kStateNone));
+        pTrack->setData(kProgressRole, m_progress.value(url, 0));
+        if (m_artwork.contains(url)) {
+            pTrack->setData(Qt::DecorationRole, m_artwork.value(url));
+        } else {
+            loadArtwork(url, track.value(QStringLiteral("artwork")).toString());
+        }
         ++row;
     }
-    // Estado de la cola actual
-    if (!m_currentUrl.isEmpty()) {
-        setUrlStatus(m_currentUrl, tr("Descargando..."), kColorRun);
-    }
-    for (const auto& entry : std::as_const(m_queue)) {
-        setUrlStatus(entry.first, tr("En cola"), kColorMuted);
-    }
-    setStatus(results.isEmpty()
-                    ? tr("Sin resultados.")
-                    : tr("%1 temas. Doble click: descargar y cargar en un deck. "
-                         "Arrastra los ya descargados a un deck.")
-                              .arg(results.size()));
 }
 
-void DlgSoundCloud::loadArtwork(int row, const QString& url) {
-    if (url.isEmpty()) {
+void DlgSoundCloud::loadArtwork(const QString& trackUrl, const QString& artUrl) {
+    if (artUrl.isEmpty()) {
         return;
     }
-    const int generation = m_listGeneration;
+    // Pedir una portada un poco mas grande que la de 100 px por defecto
+    QString url = artUrl;
+    url.replace(QStringLiteral("-large."), QStringLiteral("-t200x200."));
     QNetworkReply* pReply = m_pNetwork->get(QNetworkRequest(QUrl(url)));
-    connect(pReply, &QNetworkReply::finished, this, [this, pReply, row, generation]() {
+    connect(pReply, &QNetworkReply::finished, this, [this, pReply, trackUrl]() {
         pReply->deleteLater();
-        if (generation != m_listGeneration || pReply->error() != QNetworkReply::NoError) {
+        if (pReply->error() != QNetworkReply::NoError) {
             return;
         }
         QPixmap pixmap;
-        if (pixmap.loadFromData(pReply->readAll())) {
-            QTableWidgetItem* pItem = m_pTable->item(row, kColTitle);
-            if (pItem) {
-                pItem->setIcon(QIcon(pixmap.scaled(72,
-                        72,
-                        Qt::KeepAspectRatioByExpanding,
-                        Qt::SmoothTransformation)));
-            }
+        if (!pixmap.loadFromData(pReply->readAll())) {
+            return;
+        }
+        const QPixmap rounded = roundedPixmap(pixmap, 38, 6);
+        m_artwork.insert(trackUrl, rounded);
+        const int row = rowForUrl(trackUrl);
+        if (row >= 0) {
+            m_pTable->item(row, kColTrack)->setData(Qt::DecorationRole, rounded);
         }
     });
 }
@@ -576,7 +906,7 @@ void DlgSoundCloud::loadArtwork(int row, const QString& url) {
 
 int DlgSoundCloud::rowForUrl(const QString& url) const {
     for (int row = 0; row < m_pTable->rowCount(); ++row) {
-        const QTableWidgetItem* pItem = m_pTable->item(row, kColTitle);
+        const QTableWidgetItem* pItem = m_pTable->item(row, kColTrack);
         if (pItem && pItem->data(kUrlRole).toString() == url) {
             return row;
         }
@@ -599,15 +929,31 @@ QList<int> DlgSoundCloud::selectedRows() const {
     return rows;
 }
 
+void DlgSoundCloud::slotCellClicked(int row, int column) {
+    if (column != kColAction) {
+        return;
+    }
+    const QTableWidgetItem* pItem = m_pTable->item(row, kColTrack);
+    if (!pItem) {
+        return;
+    }
+    const int state = pItem->data(kStateRole).toInt();
+    if (state == kStateNone || state == kStateError) {
+        enqueue(row, After::Nothing);
+    }
+}
+
 void DlgSoundCloud::slotCellDoubleClicked(int row, int column) {
-    Q_UNUSED(column);
+    if (column == kColAction) {
+        return;
+    }
     enqueue(row, After::AutoDeck);
 }
 
 void DlgSoundCloud::slotDownloadSelected() {
     const QList<int> rows = selectedRows();
     if (rows.isEmpty()) {
-        setStatus(tr("Selecciona uno o mas temas de la lista."));
+        setStatus(tr("Seleccioná uno o más temas de la lista."));
         return;
     }
     for (int row : rows) {
@@ -623,20 +969,24 @@ void DlgSoundCloud::slotDownloadAll() {
 
 void DlgSoundCloud::slotLoadDeck1() {
     const QList<int> rows = selectedRows();
-    if (!rows.isEmpty()) {
-        enqueue(rows.first(), After::Deck1);
+    if (rows.isEmpty()) {
+        setStatus(tr("Elegí un tema de la lista."));
+        return;
     }
+    enqueue(rows.first(), After::Deck1);
 }
 
 void DlgSoundCloud::slotLoadDeck2() {
     const QList<int> rows = selectedRows();
-    if (!rows.isEmpty()) {
-        enqueue(rows.first(), After::Deck2);
+    if (rows.isEmpty()) {
+        setStatus(tr("Elegí un tema de la lista."));
+        return;
     }
+    enqueue(rows.first(), After::Deck2);
 }
 
 void DlgSoundCloud::enqueue(int row, After after) {
-    const QTableWidgetItem* pItem = m_pTable->item(row, kColTitle);
+    const QTableWidgetItem* pItem = m_pTable->item(row, kColTrack);
     if (!pItem) {
         return;
     }
@@ -668,7 +1018,10 @@ void DlgSoundCloud::enqueue(int row, After after) {
     } else {
         m_queue.append(qMakePair(url, after));
     }
-    setUrlStatus(url, tr("En cola"), kColorMuted);
+    if (!m_sessionDownloads.contains(url)) {
+        m_sessionDownloads.append(url);
+    }
+    setUrlState(url, kStateQueued);
     if (!m_pDownloadProcess) {
         startNextDownload();
     }
@@ -712,15 +1065,13 @@ void DlgSoundCloud::startNextDownload() {
                 }
             });
 
-    setUrlStatus(m_currentUrl, tr("Descargando 0%"), kColorRun);
+    setUrlState(m_currentUrl, kStateDownloading, 0);
     m_pProgress->setValue(0);
     m_pProgress->setVisible(true);
-    const int pending = static_cast<int>(m_queue.size());
-    setStatus(pending > 0
-                    ? tr("Descargando: %1  (%2 en cola)")
-                              .arg(m_titles.value(m_currentUrl, m_currentUrl))
-                              .arg(pending)
-                    : tr("Descargando: %1").arg(m_titles.value(m_currentUrl, m_currentUrl)));
+    const QString title = m_trackInfo.value(m_currentUrl).value(QStringLiteral("title")).toString();
+    setStatus(m_queue.isEmpty()
+                    ? tr("Descargando “%1”").arg(title)
+                    : tr("Descargando “%1”  ·  %2 en cola").arg(title).arg(m_queue.size()));
     m_pDownloadProcess->start(pythonPath(),
             {bridgeScript(), QStringLiteral("download"), m_currentUrl, folder});
 }
@@ -742,24 +1093,24 @@ void DlgSoundCloud::slotDownloadOutput() {
         if (event.contains(QStringLiteral("progress"))) {
             const int pct = static_cast<int>(event.value(QStringLiteral("progress")).toDouble());
             m_pProgress->setValue(pct);
-            setUrlStatus(m_currentUrl, tr("Descargando %1%").arg(pct), kColorRun);
-            QString status = tr("Descargando: %1  -  %2%")
-                                     .arg(m_titles.value(m_currentUrl, m_currentUrl))
-                                     .arg(pct);
+            setUrlState(m_currentUrl, kStateDownloading, pct);
+            const QString title =
+                    m_trackInfo.value(m_currentUrl).value(QStringLiteral("title")).toString();
+            QString status = tr("Descargando “%1”  ·  %2%").arg(title).arg(pct);
             const QString speed = event.value(QStringLiteral("speed")).toString();
             const QString eta = event.value(QStringLiteral("eta")).toString();
             if (!speed.isEmpty()) {
-                status += QStringLiteral("  -  ") + speed;
+                status += QStringLiteral("  ·  ") + speed;
             }
             if (!eta.isEmpty()) {
-                status += tr("  -  quedan %1").arg(eta);
+                status += tr("  ·  quedan %1").arg(eta);
             }
             if (!m_queue.isEmpty()) {
-                status += tr("  (%1 en cola)").arg(m_queue.size());
+                status += tr("  ·  %1 en cola").arg(m_queue.size());
             }
             setStatus(status);
         } else if (event.contains(QStringLiteral("status"))) {
-            setUrlStatus(m_currentUrl, tr("Procesando..."), kColorRun);
+            setUrlState(m_currentUrl, kStateProcessing, 100);
             m_pProgress->setValue(100);
         } else if (event.contains(QStringLiteral("done"))) {
             finishDownload(m_currentUrl, event.value(QStringLiteral("done")).toString());
@@ -786,16 +1137,16 @@ void DlgSoundCloud::slotDownloadFinished(int exitCode, QProcess::ExitStatus exit
             reason = stderrText.section('\n', -1);
         }
         if (reason.isEmpty() && (exitCode != 0 || exitStatus != QProcess::NormalExit)) {
-            reason = tr("el proceso termino con codigo %1").arg(exitCode);
+            reason = tr("el proceso terminó con código %1").arg(exitCode);
         }
-        setUrlStatus(m_currentUrl, tr("Error"), kColorErr);
+        setUrlState(m_currentUrl, kStateError);
         const int row = rowForUrl(m_currentUrl);
-        if (row >= 0 && m_pTable->item(row, kColStatus)) {
-            m_pTable->item(row, kColStatus)->setToolTip(reason);
+        if (row >= 0 && m_pTable->item(row, kColAction)) {
+            m_pTable->item(row, kColAction)->setToolTip(reason);
         }
-        setStatus(tr("No se pudo descargar %1: %2")
-                          .arg(m_titles.value(m_currentUrl, m_currentUrl), reason),
-                true);
+        const QString title =
+                m_trackInfo.value(m_currentUrl).value(QStringLiteral("title")).toString();
+        setStatus(tr("No se pudo descargar “%1”: %2").arg(title, reason), true);
     }
     m_currentUrl.clear();
     m_currentAfter = After::Nothing;
@@ -809,13 +1160,13 @@ void DlgSoundCloud::finishDownload(const QString& url, const QString& path) {
     m_pConfig->set(downloadedKey(url), ConfigValue(path));
     const int row = rowForUrl(url);
     if (row >= 0) {
-        m_pTable->item(row, kColTitle)->setData(kPathRole, path);
+        m_pTable->item(row, kColTrack)->setData(kPathRole, path);
     }
+    setUrlState(url, kStateDone, 100);
     // Agrega el tema a la biblioteca de Mixxx
-    const TrackPointer pTrack = trackForUrl(url);
-    setUrlStatus(url, pTrack ? tr("En biblioteca") : tr("Descargado"), kColorOk);
-    setStatus(tr("Listo: %1. Arrastralo a un deck o usa los botones.")
-                      .arg(m_titles.value(url, url)));
+    trackForUrl(url);
+    const QString title = m_trackInfo.value(url).value(QStringLiteral("title")).toString();
+    setStatus(tr("✓ “%1” listo y en tu biblioteca. Arrastralo a un deck.").arg(title));
     handleAfter(url, m_currentAfter);
     m_currentAfter = After::Nothing;
 }
@@ -834,7 +1185,7 @@ void DlgSoundCloud::handleAfter(const QString& url, After after) {
     }
     const TrackPointer pTrack = trackForUrl(url);
     if (!pTrack) {
-        setStatus(tr("El tema se descargo pero Mixxx no pudo abrirlo."), true);
+        setStatus(tr("El tema se descargó pero Mixxx no pudo abrirlo."), true);
         return;
     }
     switch (after) {
@@ -854,28 +1205,28 @@ void DlgSoundCloud::handleAfter(const QString& url, After after) {
 
 // ------------------------------------------------------------- utilidades
 
-void DlgSoundCloud::setUrlStatus(const QString& url, const QString& text, const QString& color) {
+void DlgSoundCloud::setUrlState(const QString& url, int state, int progress) {
+    m_state.insert(url, state);
+    m_progress.insert(url, progress);
     const int row = rowForUrl(url);
     if (row < 0) {
         return;
     }
-    QTableWidgetItem* pItem = m_pTable->item(row, kColStatus);
-    if (!pItem) {
-        return;
-    }
-    pItem->setText(text);
-    pItem->setForeground(QColor(color));
+    QTableWidgetItem* pItem = m_pTable->item(row, kColTrack);
+    pItem->setData(kStateRole, state);
+    pItem->setData(kProgressRole, progress);
+    // Repintar la celda de accion
+    m_pTable->viewport()->update(m_pTable->visualRect(m_pTable->model()->index(row, kColAction)));
 }
 
 void DlgSoundCloud::setStatus(const QString& text, bool error) {
     m_pStatusLabel->setText(text);
-    m_pStatusLabel->setStyleSheet(
-            error ? QStringLiteral("color: %1;").arg(kColorErr) : QString());
+    m_pStatusLabel->setStyleSheet(error ? QStringLiteral("color: #ff5d5d;") : QString());
 }
 
 void DlgSoundCloud::slotChooseFolder() {
     const QString dir = QFileDialog::getExistingDirectory(this,
-            tr("Donde guardar las descargas de SoundCloud"),
+            tr("Dónde guardar las descargas de SoundCloud"),
             downloadDir());
     if (!dir.isEmpty()) {
         m_pConfig->setValue(kDownloadDirKey, dir);

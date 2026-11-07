@@ -13,6 +13,14 @@ const QString kViewName = QStringLiteral("SoundCloud");
 SoundCloudFeature::SoundCloudFeature(Library* pLibrary, UserSettingsPointer pConfig)
         : LibraryFeature(pLibrary, pConfig, QStringLiteral("soundcloud")),
           m_pSidebarModel(make_parented<TreeItemModel>(this)) {
+    // Primera vez: interfaz mas limpia, sin la fila de samplers ni la de
+    // microfonos/auxiliares (se pueden volver a mostrar desde el menu View).
+    const ConfigKey firstRunKey(QStringLiteral("[SoundCloud]"), QStringLiteral("CleanUiApplied"));
+    if (!m_pConfig->getValue(firstRunKey, false)) {
+        m_pConfig->setValue(ConfigKey(QStringLiteral("[Skin]"), QStringLiteral("show_samplers")), 0);
+        m_pConfig->setValue(ConfigKey(QStringLiteral("[Skin]"), QStringLiteral("show_microphones")), 0);
+        m_pConfig->setValue(firstRunKey, true);
+    }
 }
 
 QVariant SoundCloudFeature::title() {

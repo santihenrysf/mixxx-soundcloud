@@ -3,8 +3,10 @@
 #include <QByteArray>
 #include <QHash>
 #include <QJsonArray>
+#include <QJsonObject>
 #include <QList>
 #include <QPair>
+#include <QPixmap>
 #include <QProcess>
 #include <QString>
 #include <QStringList>
@@ -18,13 +20,14 @@ class Library;
 class QComboBox;
 class QLabel;
 class QLineEdit;
+class QListWidget;
 class QNetworkAccessManager;
 class QProgressBar;
 class QPushButton;
 class QTableWidget;
 class WLibrary;
 
-/// Vista de la seccion "SoundCloud" de la biblioteca de Mixxx:
+/// Seccion "SoundCloud" de la biblioteca de Mixxx:
 /// buscar, ver tus likes y playlists, descargar y cargar en los decks.
 /// Habla con scdl_bridge.py (Python) mediante JSON por stdout.
 class DlgSoundCloud : public QWidget, public virtual LibraryView {
@@ -42,14 +45,14 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
     void loadTrackToPlayer(TrackPointer pTrack, const QString& group, bool play);
 
   private slots:
+    void slotNavChanged(int index);
     void slotSearch();
-    void slotMyLikes();
-    void slotMyPlaylists();
     void slotPlaylistChosen(int index);
     void slotChangeProfile();
     void slotListFinished(int exitCode, QProcess::ExitStatus exitStatus);
     void slotDownloadOutput();
     void slotDownloadFinished(int exitCode, QProcess::ExitStatus exitStatus);
+    void slotCellClicked(int row, int column);
     void slotCellDoubleClicked(int row, int column);
     void slotDownloadSelected();
     void slotDownloadAll();
@@ -69,6 +72,12 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
         Tracks,
         Playlists,
     };
+    enum class Page {
+        Search,
+        Likes,
+        Playlists,
+        Downloads,
+    };
 
     QString bridgeDir() const;
     QString pythonPath() const;
@@ -78,9 +87,11 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
     bool ensureBridge();
     QProcessEnvironment processEnvironment() const;
 
+    void setHeader(const QString& title, const QString& subtitle);
     void runList(const QStringList& args, ListKind kind, const QString& busyText);
     void fillTracks(const QJsonArray& results);
     void fillPlaylists(const QJsonArray& playlists);
+    void showDownloadsPage();
 
     int rowForUrl(const QString& url) const;
     QString pathForUrl(const QString& url) const;
@@ -88,42 +99,45 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
     void enqueue(int row, After after);
     void startNextDownload();
     void finishDownload(const QString& url, const QString& path);
-    void setUrlStatus(const QString& url, const QString& text, const QString& color);
+    void setUrlState(const QString& url, int state, int progress = 0);
     void setStatus(const QString& text, bool error = false);
     void handleAfter(const QString& url, After after);
     TrackPointer trackForUrl(const QString& url);
-    void loadArtwork(int row, const QString& url);
+    void loadArtwork(const QString& trackUrl, const QString& artUrl);
     void setBusy(bool busy);
 
     const UserSettingsPointer m_pConfig;
     Library* const m_pLibrary;
 
+    QListWidget* m_pNav;
+    QLabel* m_pTitle;
+    QLabel* m_pSubtitle;
     QLineEdit* m_pSearchEdit;
-    QPushButton* m_pSearchButton;
-    QPushButton* m_pLikesButton;
-    QPushButton* m_pPlaylistsButton;
     QComboBox* m_pPlaylistCombo;
-    QPushButton* m_pProfileButton;
-    QLabel* m_pTitleLabel;
     QTableWidget* m_pTable;
-    QPushButton* m_pDownloadButton;
-    QPushButton* m_pDownloadAllButton;
     QPushButton* m_pDeck1Button;
     QPushButton* m_pDeck2Button;
+    QPushButton* m_pDownloadButton;
+    QPushButton* m_pDownloadAllButton;
     QPushButton* m_pFolderButton;
     QPushButton* m_pOpenFolderButton;
+    QPushButton* m_pProfileButton;
     QLabel* m_pStatusLabel;
     QProgressBar* m_pProgress;
 
+    Page m_page;
     QProcess* m_pListProcess;
     ListKind m_listKind;
     QProcess* m_pDownloadProcess;
     QByteArray m_downloadBuffer;
     QString m_lastError;
     QNetworkAccessManager* m_pNetwork;
-    int m_listGeneration;
 
-    QHash<QString, QString> m_titles; // url -> titulo (para la cola)
+    QHash<QString, QJsonObject> m_trackInfo; // url -> datos del tema
+    QHash<QString, QPixmap> m_artwork;       // url del tema -> portada
+    QHash<QString, int> m_state;             // url -> estado de descarga
+    QHash<QString, int> m_progress;          // url -> % descargado
+    QStringList m_sessionDownloads;          // orden de la pagina Descargas
     QList<QPair<QString, After>> m_queue;
     QString m_currentUrl;
     After m_currentAfter;
