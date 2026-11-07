@@ -20,6 +20,7 @@
 #include "library/libraryfeature.h"
 #include "library/mixxxlibraryfeature.h"
 #include "library/recording/recordingfeature.h"
+#include "library/soundcloud/soundcloudfeature.h"
 #include "library/rekordbox/rekordboxfeature.h"
 #include "library/rhythmbox/rhythmboxfeature.h"
 #include "library/serato/seratofeature.h"
@@ -135,6 +136,8 @@ Library::Library(
     addFeature(m_pBrowseFeature);
 
     addFeature(new RecordingFeature(this, m_pConfig, pRecordingManager));
+
+    addFeature(new SoundCloudFeature(this, m_pConfig));
 
     addFeature(new SetlogFeature(this, UserSettingsPointer(m_pConfig)));
 
