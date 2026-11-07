@@ -540,10 +540,15 @@ bool DlgSoundCloud::hasFocus() const {
 }
 
 void DlgSoundCloud::setFocus() {
-    if (m_page == Page::Search) {
-        m_pSearchEdit->setFocus();
-    } else {
+    // Con resultados en pantalla el foco va a la lista, asi un controlador
+    // puede navegarla ([Library],MoveVertical) y cargar al deck.
+    if (m_pTable->rowCount() > 0) {
         m_pTable->setFocus();
+        if (m_pTable->currentRow() < 0) {
+            m_pTable->selectRow(0);
+        }
+    } else {
+        m_pSearchEdit->setFocus();
     }
 }
 
