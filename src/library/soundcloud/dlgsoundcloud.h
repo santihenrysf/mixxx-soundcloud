@@ -107,6 +107,8 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
     void fillTracks(const QJsonArray& results);
     void fillPlaylists(const QJsonArray& playlists);
     void showDownloadsPage();
+    void openPlaylist(const QString& url, const QString& title);
+    bool isPlaylistRow(int row) const;
 
     int rowForUrl(const QString& url) const;
     QString pathForUrl(const QString& url) const;
@@ -139,6 +141,7 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
 
     QListWidget* m_pNav;
     QLabel* m_pTitle;
+    QPushButton* m_pBackButton;
     QLabel* m_pSubtitle;
     QLineEdit* m_pSearchEdit;
     QComboBox* m_pPlaylistCombo;

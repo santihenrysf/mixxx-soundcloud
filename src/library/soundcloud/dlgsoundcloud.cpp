@@ -72,6 +72,7 @@ constexpr int kPreviewRole = Qt::UserRole + 6;
 constexpr int kDecksRole = Qt::UserRole + 7;  // decks que tienen el tema cargado (bit 0 = A)
 constexpr int kTargetRole = Qt::UserRole + 8; // decks a los que se esta cargando
 constexpr int kBigCoverRole = Qt::UserRole + 9; // portada grande para la grilla
+constexpr int kKindRole = Qt::UserRole + 10;    // 0 = tema, 1 = playlist
 
 constexpr int kColLoad = 0;
 constexpr int kColTrack = 1;
@@ -172,6 +173,11 @@ QPushButton[scButton="true"]:pressed { background: #34343a; }
 QPushButton[scButton="true"]:disabled { color: #55555c; }
 QPushButton[scPrimary="true"] { background: #ff6a1a; color: #ffffff; border: none; }
 QPushButton[scPrimary="true"]:hover { background: #ff7d36; }
+QPushButton[scGhost="true"] {
+  background: transparent; color: #8a8a93; border: 1px solid #2f2f34; border-radius: 8px;
+  padding: 5px 11px; font-size: 12px;
+}
+QPushButton[scGhost="true"]:hover { color: #ffffff; border-color: #4a4a52; }
 QPushButton[scLink="true"] {
   background: transparent; border: none; color: #8a8a93; font-size: 12px;
   padding: 4px 6px; text-align: left;
@@ -345,6 +351,16 @@ class ActionDelegate : public QStyledItemDelegate {
         }
 
         const QModelIndex trackIndex = index.sibling(index.row(), kColTrack);
+        if (trackIndex.data(kKindRole).toInt() == 1) {
+            painter->save();
+            painter->setPen(kMuted);
+            QFont chevron = opt.font;
+            chevron.setPointSizeF(chevron.pointSizeF() > 0 ? chevron.pointSizeF() * 1.6 : 16);
+            painter->setFont(chevron);
+            painter->drawText(option.rect.adjusted(0, 0, -16, 0), Qt::AlignRight | Qt::AlignVCenter, QStringLiteral("›"));
+            painter->restore();
+            return;
+        }
         const int state = trackIndex.data(kStateRole).toInt();
         const int progress = trackIndex.data(kProgressRole).toInt();
         const QRect r = option.rect.adjusted(10, 0, -12, 0);
@@ -420,6 +436,9 @@ class LoadDelegate : public QStyledItemDelegate {
             pWidget->style()->drawPrimitive(QStyle::PE_PanelItemViewItem, &opt, painter, pWidget);
         }
         const QModelIndex trackIndex = index.sibling(index.row(), kColTrack);
+        if (trackIndex.data(kKindRole).toInt() == 1) {
+            return; // playlist: sin botones A/B
+        }
         const int loaded = trackIndex.data(kDecksRole).toInt();
         const int target = trackIndex.data(kTargetRole).toInt();
         QPoint mouse(-1, -1);
@@ -518,6 +537,9 @@ class SoundCloudTable : public QTableWidget {
         const QTableWidgetItem* pTrack = pFirst ? item(pFirst->row(), kColTrack) : nullptr;
         if (!pTrack) {
             return nullptr;
+        }
+        if (pTrack->data(kKindRole).toInt() == 1) {
+            return nullptr; // las playlists no se arrastran a un deck
         }
         auto* pMimeData = new QMimeData();
         const QString path = pTrack->data(kPathRole).toString();
@@ -621,8 +643,9 @@ class GridDelegate : public QStyledItemDelegate {
             painter->drawRoundedRect(QRectF(cover).adjusted(1, 1, -1, -1), 8, 8);
         }
 
+        const bool isPlaylist = index.data(kKindRole).toInt() == 1;
         // Botones A / B
-        const int loaded = index.data(kDecksRole).toInt();
+        const int loaded = isPlaylist ? 0 : index.data(kDecksRole).toInt();
         const int target = index.data(kTargetRole).toInt();
         QFont chipFont = option.font;
         chipFont.setWeight(QFont::DemiBold);
@@ -633,7 +656,7 @@ class GridDelegate : public QStyledItemDelegate {
             const bool isLoaded = loaded & (1 << i);
             const bool isTarget = target & (1 << i);
             const bool over = chip.contains(mouse);
-            if (!isLoaded && !isTarget && !hovered) {
+            if (isPlaylist || (!isLoaded && !isTarget && !hovered)) {
                 continue; // limpio: solo aparecen al pasar el mouse o si estan en uso
             }
             painter->setPen(QPen(color, isTarget ? 2.0 : 1.2));
@@ -671,7 +694,7 @@ class GridDelegate : public QStyledItemDelegate {
         } else if (state == kStateError) {
             painter->setPen(kErr);
             painter->drawText(action.adjusted(-40, 0, 0, 0), Qt::AlignRight | Qt::AlignVCenter, QObject::tr("Error"));
-        } else if (hovered) {
+        } else if (hovered && !isPlaylist) {
             const bool over = action.contains(mouse);
             painter->setPen(QPen(over ? kAccent : QColor(255, 255, 255, 200), 1.4));
             painter->setBrush(QColor(0x15, 0x15, 0x17, 200));
@@ -803,10 +826,14 @@ DlgSoundCloud::DlgSoundCloud(WLibrary* parent,
     auto* pHeader = new QHBoxLayout();
     auto* pHeaderText = new QVBoxLayout();
     pHeaderText->setSpacing(0);
+    m_pBackButton = new QPushButton(QStringLiteral("‹  ") + tr("Mis playlists"), pPanel);
+    prepareButton(m_pBackButton, "scLink");
+    m_pBackButton->setVisible(false);
     m_pTitle = new QLabel(pPanel);
     m_pTitle->setObjectName(QStringLiteral("scTitle"));
     m_pSubtitle = new QLabel(pPanel);
     m_pSubtitle->setObjectName(QStringLiteral("scSubtitle"));
+    pHeaderText->addWidget(m_pBackButton, 0, Qt::AlignLeft);
     pHeaderText->addWidget(m_pTitle);
     pHeaderText->addWidget(m_pSubtitle);
     pHeader->addLayout(pHeaderText, 1);
@@ -817,7 +844,13 @@ DlgSoundCloud::DlgSoundCloud(WLibrary* parent,
     prepareButton(m_pDeck1Button);
     prepareButton(m_pDeck2Button);
     prepareButton(m_pDownloadButton);
-    prepareButton(m_pDownloadAllButton, "scPrimary");
+    // Se cargan con A/B o arrastrando: los botones de deck ya no se muestran
+    m_pDeck1Button->setVisible(false);
+    m_pDeck2Button->setVisible(false);
+    m_pDownloadButton->setVisible(false);
+    m_pDownloadAllButton->setText(QStringLiteral("↓  ") + tr("Descargar todo"));
+    m_pDownloadAllButton->setProperty("scGhost", true);
+    m_pDownloadAllButton->setCursor(Qt::PointingHandCursor);
     m_pDeck1Button->setToolTip(tr("Descarga (si hace falta) y carga el tema elegido en el Deck 1"));
     m_pDeck2Button->setToolTip(tr("Descarga (si hace falta) y carga el tema elegido en el Deck 2"));
     m_pDownloadButton->setToolTip(tr("Descarga los temas seleccionados"));
@@ -834,10 +867,7 @@ DlgSoundCloud::DlgSoundCloud(WLibrary* parent,
         pButton->setCursor(Qt::PointingHandCursor);
         pHeader->addWidget(pButton, 0, Qt::AlignBottom);
     }
-    pHeader->addSpacing(10);
-    pHeader->addWidget(m_pDeck1Button, 0, Qt::AlignBottom);
-    pHeader->addWidget(m_pDeck2Button, 0, Qt::AlignBottom);
-    pHeader->addWidget(m_pDownloadButton, 0, Qt::AlignBottom);
+    pHeader->addSpacing(6);
     pHeader->addWidget(m_pDownloadAllButton, 0, Qt::AlignBottom);
     pMain->addLayout(pHeader);
 
@@ -1036,6 +1066,7 @@ DlgSoundCloud::DlgSoundCloud(WLibrary* parent,
             this,
             &DlgSoundCloud::slotDownloadSelected);
     connect(m_pDownloadAllButton, &QPushButton::clicked, this, &DlgSoundCloud::slotDownloadAll);
+    connect(m_pBackButton, &QPushButton::clicked, this, [this]() { openPage(Page::Playlists); });
     connect(m_pDeck1Button, &QPushButton::clicked, this, &DlgSoundCloud::slotLoadDeck1);
     connect(m_pDeck2Button, &QPushButton::clicked, this, &DlgSoundCloud::slotLoadDeck2);
     connect(m_pFolderButton, &QPushButton::clicked, this, &DlgSoundCloud::slotChooseFolder);
@@ -1227,7 +1258,8 @@ void DlgSoundCloud::openPage(Page page) {
     m_page = page;
     hideProfileCard();
     m_pSearchEdit->setVisible(m_page == Page::Search);
-    m_pPlaylistCombo->setVisible(m_page == Page::Playlists && m_pPlaylistCombo->count() > 0);
+    m_pPlaylistCombo->setVisible(false);
+    m_pBackButton->setVisible(false);
     const bool needsProfile = m_page == Page::Likes || m_page == Page::Playlists;
     if (needsProfile && profile(false).isEmpty()) {
         m_pendingPage = m_page;
@@ -1280,9 +1312,8 @@ void DlgSoundCloud::showProfileCard(bool changing) {
     setResultsVisible(false);
     m_pSearchEdit->setVisible(false);
     m_pPlaylistCombo->setVisible(false);
-    for (QPushButton* pButton : {m_pDeck1Button, m_pDeck2Button, m_pDownloadButton, m_pDownloadAllButton}) {
-        pButton->setVisible(false);
-    }
+    m_pDownloadAllButton->setVisible(false);
+    m_pBackButton->setVisible(false);
     m_pGridButton->setVisible(false);
     m_pListButton->setVisible(false);
     m_pProfileCard->setVisible(true);
@@ -1294,9 +1325,7 @@ void DlgSoundCloud::showProfileCard(bool changing) {
 void DlgSoundCloud::hideProfileCard() {
     m_pProfileCard->setVisible(false);
     setResultsVisible(true);
-    for (QPushButton* pButton : {m_pDeck1Button, m_pDeck2Button, m_pDownloadButton, m_pDownloadAllButton}) {
-        pButton->setVisible(true);
-    }
+    m_pDownloadAllButton->setVisible(true);
     m_pGridButton->setVisible(true);
     m_pListButton->setVisible(true);
 }
@@ -1497,30 +1526,65 @@ void DlgSoundCloud::slotListFinished(int exitCode, QProcess::ExitStatus exitStat
     }
     setStatus(results.isEmpty()
                     ? tr("Sin resultados.")
-                    : tr("Doble click: descargar y cargar en el primer deck libre  ·  "
-                         "click en ↓: solo descargar  ·  arrastrá los listos a un deck"));
+                    : tr("A / B: cargar en ese deck  ·  doble click: primer deck libre  ·  "
+                         "arrastrá cualquier tema a un deck  ·  ↓: solo descargar"));
 }
 
 void DlgSoundCloud::fillPlaylists(const QJsonArray& playlists) {
-    m_pPlaylistCombo->clear();
+    m_pTable->setRowCount(0);
+    m_pTable->setRowCount(static_cast<int>(playlists.size()));
+    int row = 0;
     for (const QJsonValue& value : playlists) {
         const QJsonObject pl = value.toObject();
-        m_pPlaylistCombo->addItem(QStringLiteral("%1  (%2)")
-                                          .arg(pl.value(QStringLiteral("title")).toString())
-                                          .arg(pl.value(QStringLiteral("count")).toInt()),
-                pl.value(QStringLiteral("url")).toString());
+        const QString url = pl.value(QStringLiteral("url")).toString();
+        const int count = pl.value(QStringLiteral("count")).toInt();
+        auto* pItem = new QTableWidgetItem(pl.value(QStringLiteral("title")).toString());
+        pItem->setData(kKindRole, 1);
+        pItem->setData(kUrlRole, url);
+        QString subtitle = count == 1 ? tr("1 tema") : tr("%1 temas").arg(count);
+        if (pl.value(QStringLiteral("liked")).toBool()) {
+            subtitle += QStringLiteral("  ·  ♥");
+        }
+        pItem->setData(kArtistRole, subtitle);
+        pItem->setToolTip(url);
+        auto* pCount = new QTableWidgetItem();
+        m_pTable->setItem(row, kColLoad, new QTableWidgetItem());
+        m_pTable->setItem(row, kColTrack, pItem);
+        m_pTable->setItem(row, kColDuration, pCount);
+        m_pTable->setItem(row, kColAction, new QTableWidgetItem());
+        if (m_artwork.contains(url)) {
+            pItem->setData(Qt::DecorationRole, m_artwork.value(url));
+            pItem->setData(kBigCoverRole, m_artworkBig.value(url));
+        } else {
+            loadArtwork(url, pl.value(QStringLiteral("artwork")).toString());
+        }
+        ++row;
     }
-    m_pPlaylistCombo->setCurrentIndex(-1);
-    m_pPlaylistCombo->setVisible(true);
-    if (playlists.isEmpty()) {
-        setStatus(tr("No encontré playlists públicas en tu perfil."));
-    } else {
-        setStatus(tr("%1 playlists. Elegí una en la lista.").arg(playlists.size()));
-        m_pPlaylistCombo->showPopup();
+    setHeader(tr("Mis playlists"),
+            playlists.size() == 1 ? tr("1 playlist") : tr("%1 playlists").arg(playlists.size()));
+    m_pDownloadAllButton->setVisible(false);
+    setStatus(playlists.isEmpty() ? tr("No encontré playlists públicas en tu perfil.")
+                                  : tr("Elegí una playlist para ver sus temas."));
+}
+
+bool DlgSoundCloud::isPlaylistRow(int row) const {
+    const QTableWidgetItem* pItem = m_pTable->item(row, kColTrack);
+    return pItem && pItem->data(kKindRole).toInt() == 1;
+}
+
+void DlgSoundCloud::openPlaylist(const QString& url, const QString& title) {
+    if (url.isEmpty()) {
+        return;
     }
+    setHeader(title, tr("Playlist"));
+    m_pBackButton->setVisible(true);
+    m_pDownloadAllButton->setVisible(true);
+    m_pTable->setRowCount(0);
+    runList({QStringLiteral("playlist"), url}, ListKind::Tracks, tr("Cargando playlist…"));
 }
 
 void DlgSoundCloud::fillTracks(const QJsonArray& results) {
+    m_pDownloadAllButton->setVisible(!results.isEmpty());
     m_pTable->setRowCount(0);
     m_pTable->setRowCount(static_cast<int>(results.size()));
     int row = 0;
@@ -1531,6 +1595,7 @@ void DlgSoundCloud::fillTracks(const QJsonArray& results) {
 
         auto* pTrack = new QTableWidgetItem(track.value(QStringLiteral("title")).toString());
         pTrack->setData(kUrlRole, url);
+        pTrack->setData(kKindRole, 0);
         pTrack->setData(kArtistRole, track.value(QStringLiteral("artist")).toString());
         pTrack->setData(kPreviewRole, track.value(QStringLiteral("preview")).toBool());
         pTrack->setToolTip(url);
@@ -1627,6 +1692,11 @@ QList<int> DlgSoundCloud::selectedRows() const {
 }
 
 void DlgSoundCloud::slotCellClicked(int row, int column) {
+    if (isPlaylistRow(row)) {
+        const QTableWidgetItem* pItem = m_pTable->item(row, kColTrack);
+        openPlaylist(pItem->data(kUrlRole).toString(), pItem->text());
+        return;
+    }
     if (column == kColLoad) {
         const QRect cell = m_pTable->visualRect(m_pTable->model()->index(row, kColLoad));
         const int deck = deckChipAt(cell, m_pTable->viewport()->mapFromGlobal(QCursor::pos()));
@@ -1650,6 +1720,9 @@ void DlgSoundCloud::slotCellClicked(int row, int column) {
 }
 
 void DlgSoundCloud::slotCellDoubleClicked(int row, int column) {
+    if (isPlaylistRow(row)) {
+        return; // ya se abrio con el click
+    }
     if (column == kColAction || column == kColLoad) {
         return;
     }
@@ -1669,6 +1742,9 @@ void DlgSoundCloud::slotDownloadSelected() {
 
 void DlgSoundCloud::slotDownloadAll() {
     for (int row = 0; row < m_pTable->rowCount(); ++row) {
+        if (isPlaylistRow(row)) {
+            continue;
+        }
         enqueue(row, After::Nothing);
     }
 }
@@ -1700,6 +1776,10 @@ void DlgSoundCloud::slotLoadDeck2() {
 void DlgSoundCloud::enqueue(int row, After after) {
     const QTableWidgetItem* pItem = m_pTable->item(row, kColTrack);
     if (!pItem) {
+        return;
+    }
+    if (pItem->data(kKindRole).toInt() == 1) {
+        openPlaylist(pItem->data(kUrlRole).toString(), pItem->text());
         return;
     }
     enqueueUrl(pItem->data(kUrlRole).toString(), after);
@@ -2078,6 +2158,10 @@ void DlgSoundCloud::slotGridClicked(const QModelIndex& index) {
     if (!pTrack) {
         return;
     }
+    if (pTrack->data(kKindRole).toInt() == 1) {
+        openPlaylist(pTrack->data(kUrlRole).toString(), pTrack->text());
+        return;
+    }
     for (int i = 0; i < 2; ++i) {
         if (gridChipRect(cell, i).adjusted(-3, -3, 3, 3).contains(pos)) {
             loadUrlToGroup(pTrack->data(kUrlRole).toString(), kDeckGroups[i]);
@@ -2093,6 +2177,9 @@ void DlgSoundCloud::slotGridClicked(const QModelIndex& index) {
 }
 
 void DlgSoundCloud::slotGridDoubleClicked(const QModelIndex& index) {
+    if (isPlaylistRow(index.row())) {
+        return; // ya se abrio con el click
+    }
     const QRect cell = m_pGrid->visualRect(index);
     const QPoint pos = m_pGrid->viewport()->mapFromGlobal(QCursor::pos());
     if (gridActionRect(cell).contains(pos) || gridChipRect(cell, 0).contains(pos) ||
