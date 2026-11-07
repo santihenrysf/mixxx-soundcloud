@@ -21,7 +21,9 @@ class Library;
 class QComboBox;
 class QLabel;
 class QLineEdit;
+class QListView;
 class QListWidget;
+class QToolButton;
 class QNetworkAccessManager;
 class QProgressBar;
 class QPushButton;
@@ -42,6 +44,9 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
     void setFocus() override;
     bool loadSelectedToGroup(const QString& group, bool play) override;
     bool activateSelected() override;
+
+    /// Soltar un tema (aun sin descargar) sobre un deck: lo baja y lo carga ahi.
+    bool loadUrlToGroup(const QString& url, const QString& group);
 
   signals:
     void loadTrack(TrackPointer pTrack);
@@ -66,6 +71,8 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
     void slotChooseFolder();
     void slotOpenFolder();
     void slotStyleFileChanged();
+    void slotGridClicked(const QModelIndex& index);
+    void slotGridDoubleClicked(const QModelIndex& index);
 
   private:
     enum class After {
@@ -105,6 +112,9 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
     QString pathForUrl(const QString& url) const;
     QList<int> selectedRows() const;
     void enqueue(int row, After after);
+    void enqueueUrl(const QString& url, After after);
+    void refreshDeckIndicators();
+    void setTargetDeck(const QString& url, int mask);
     void startNextDownload();
     void finishDownload(const QString& url, const QString& path);
     void setUrlState(const QString& url, int state, int progress = 0);
@@ -113,6 +123,8 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
     TrackPointer trackForUrl(const QString& url);
     void loadArtwork(const QString& trackUrl, const QString& artUrl);
     void setBusy(bool busy);
+    void setGridMode(bool grid);
+    void setResultsVisible(bool visible);
     void showProfileCard(bool changing);
     void hideProfileCard();
     void setProfileError(const QString& text);
@@ -131,6 +143,10 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
     QLineEdit* m_pSearchEdit;
     QComboBox* m_pPlaylistCombo;
     QTableWidget* m_pTable;
+    QListView* m_pGrid;
+    QToolButton* m_pGridButton;
+    QToolButton* m_pListButton;
+    bool m_gridMode;
     QPushButton* m_pDeck1Button;
     QPushButton* m_pDeck2Button;
     QPushButton* m_pDownloadButton;
@@ -162,9 +178,11 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
 
     QHash<QString, QJsonObject> m_trackInfo; // url -> datos del tema
     QHash<QString, QPixmap> m_artwork;       // url del tema -> portada
+    QHash<QString, QPixmap> m_artworkBig;    // url del tema -> portada grande (grilla)
     QHash<QString, int> m_state;             // url -> estado de descarga
     QHash<QString, int> m_progress;          // url -> % descargado
     QHash<QString, QPair<QString, bool>> m_groupTargets; // url -> (grupo, play)
+    QHash<QString, int> m_targetMask; // url -> decks a los que se esta cargando (bit 0 = A)
     QStringList m_sessionDownloads;          // orden de la pagina Descargas
     QList<QPair<QString, After>> m_queue;
     QString m_currentUrl;

@@ -9,6 +9,13 @@
 
 namespace {
 
+std::function<bool(const QMimeData&, const QString&)> s_remoteDropHandler;
+
+bool isRemoteTrackDrag(const QMimeData& mimeData) {
+    return s_remoteDropHandler &&
+            mimeData.hasFormat(DragAndDropHelper::kRemoteTrackMimeType);
+}
+
 QDrag* dragUrls(
         const QList<QUrl>& trackUrls,
         QWidget* pDragSource,
@@ -254,13 +261,24 @@ QDrag* DragAndDropHelper::dragTrackLocations(
     return dragUrls(trackUrls, pDragSource, sourceIdentifier);
 }
 
+// static
+const QString DragAndDropHelper::kRemoteTrackMimeType =
+        QStringLiteral("application/x-mixxx-remote-track");
+
+// static
+void DragAndDropHelper::setRemoteDropHandler(
+        std::function<bool(const QMimeData& mimeData, const QString& group)> handler) {
+    s_remoteDropHandler = std::move(handler);
+}
+
 //static
 void DragAndDropHelper::handleTrackDragEnterEvent(
         QDragEnterEvent* pEvent,
         const QString& group,
         UserSettingsPointer pConfig) {
     if (allowLoadToPlayer(group, pConfig) &&
-            dragEnterAccept(*pEvent->mimeData(), group, true, false)) {
+            (isRemoteTrackDrag(*pEvent->mimeData()) ||
+                    dragEnterAccept(*pEvent->mimeData(), group, true, false))) {
         pEvent->acceptProposedAction();
     } else {
         qDebug() << "Ignoring drag enter event, loading not allowed";
@@ -275,6 +293,11 @@ void DragAndDropHelper::handleTrackDropEvent(
         const QString& group,
         UserSettingsPointer pConfig) {
     if (allowLoadToPlayer(group, pConfig)) {
+        if (isRemoteTrackDrag(*pEvent->mimeData()) &&
+                s_remoteDropHandler(*pEvent->mimeData(), group)) {
+            pEvent->accept();
+            return;
+        }
         if (allowDeckCloneAttempt(*pEvent, group)) {
             pEvent->accept();
             target.emitCloneDeck(pEvent->mimeData()->text(), group);

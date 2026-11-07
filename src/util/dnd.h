@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+
 #include <QDrag>
 #include <QDropEvent>
 #include <QList>
@@ -55,4 +57,11 @@ class DragAndDropHelper final {
     static void mousePressed(QMouseEvent* pEvent);
 
     static bool mouseMoveInitiatesDrag(QMouseEvent* pEvent);
+
+    /// Arrastres "remotos": elementos que todavia no son un archivo (ej. un
+    /// tema de SoundCloud sin descargar). Llevan este MIME type y, al soltarlos
+    /// sobre un deck, se le pasa al handler registrado el contenido y el grupo.
+    static const QString kRemoteTrackMimeType;
+    static void setRemoteDropHandler(
+            std::function<bool(const QMimeData& mimeData, const QString& group)> handler);
 };
