@@ -1,120 +1,172 @@
-# Compila los instaladores de Mixxx + seccion SoundCloud (Windows y macOS).
+# Compila los instaladores de Mixxx + seccion SoundCloud.
+# - Windows: en cada push.
+# - macOS: a pedido (boton "Run workflow" con mac=true) o con "[mac]" en el mensaje del commit.
+# Guarda entre ejecuciones las librerias descargadas (buildenv) y lo ya
+# compilado (sccache/ccache), asi los cambios chicos compilan mucho mas rapido.
 name: Instaladores (SoundCloud)
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      mac:
+        description: "Compilar tambien macOS"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
-jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Windows
-            os: windows-2022
-            buildenv_script: tools\windows_buildenv.bat
-            buildenv_basepath: C:\buildenv
-            cmake_args: >-
-              -DBULK=ON -DFFMPEG=OFF -DHSS1394=ON -DLOCALECOMPARE=ON -DMAD=ON
-              -DMEDIAFOUNDATION=ON -DMODPLUG=ON -DQT6=ON -DWAVPACK=ON
-              -DVCPKG_TARGET_TRIPLET=x64-windows-release
-            cpack_generator: WIX
-            artifact_name: Mixxx-SoundCloud-Windows
-            artifact_path: build/*.msi
-          - name: macOS Apple Silicon
-            os: macos-15-intel
-            buildenv_script: tools/macos_arm64-cross-release_buildenv.sh
-            buildenv_basepath: /Users/runner/buildenv
-            cmake_args: >-
-              -DBULK=ON -DCOREAUDIO=ON -DHSS1394=ON -DMACOS_BUNDLE=ON -DMODPLUG=ON
-              -DQT6=ON -DWAVPACK=ON -DVCPKG_TARGET_TRIPLET=arm64-osx-min1100-release
-            cpack_generator: DragNDrop
-            artifact_name: Mixxx-SoundCloud-macOS-AppleSilicon
-            artifact_path: build/*.dmg
-          - name: macOS Intel
-            os: macos-15-intel
-            buildenv_script: tools/macos_release_buildenv.sh
-            buildenv_basepath: /Users/runner/buildenv
-            cmake_args: >-
-              -DBULK=ON -DCOREAUDIO=ON -DHSS1394=ON -DMACOS_BUNDLE=ON -DMODPLUG=ON
-              -DQT6=ON -DWAVPACK=ON -DVCPKG_TARGET_TRIPLET=x64-osx-min1100-release
-            cpack_generator: DragNDrop
-            artifact_name: Mixxx-SoundCloud-macOS-Intel
-            artifact_path: build/*.dmg
+concurrency:
+  group: instaladores-${{ github.ref }}
+  cancel-in-progress: true
 
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
+jobs:
+  windows:
+    name: Windows
+    runs-on: windows-2022
     timeout-minutes: 330
     env:
-      BUILDENV_BASEPATH: ${{ matrix.buildenv_basepath }}
+      BUILDENV_BASEPATH: C:\buildenv
+      SCCACHE_GHA_ENABLED: "true"
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Ensure tags are fetched
         run: git fetch origin --force --tags
 
-      - name: Set up cmake
-        uses: jwlawson/actions-setup-cmake@v2.2
+      - uses: jwlawson/actions-setup-cmake@v2.2
         with:
           cmake-version: "3.21.x"
 
-      - name: "[Windows] Set up MSVC Developer Command Prompt"
-        if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@v1
 
-      - name: "[macOS] Install ccache"
-        if: runner.os == 'macOS'
-        run: brew install ccache
+      - name: Compiler cache (sccache)
+        uses: mozilla-actions/sccache-action@v0.0.9
 
-      - name: "[Windows] Set up build environment"
-        if: runner.os == 'Windows'
+      - name: Build environment name
         shell: cmd
-        run: ${{ matrix.buildenv_script }} setup
+        run: tools\windows_buildenv.bat name
+
+      - name: Cache build environment
+        uses: actions/cache@v4
+        with:
+          path: C:\buildenv
+          key: buildenv-windows-${{ env.BUILDENV_NAME }}
+
+      - name: Set up build environment
+        shell: cmd
+        run: tools\windows_buildenv.bat setup
         env:
           BUILDENV_RELEASE: TRUE
 
-      - name: "[macOS] Set up build environment"
-        if: runner.os == 'macOS'
-        run: ${{ matrix.buildenv_script }} setup
-
-      - name: Create build directory
-        run: mkdir build
-
       - name: Configure
-        working-directory: build
-        env:
-          CC: ${{ runner.os == 'Windows' && 'cl' || '' }}
-          CXX: ${{ runner.os == 'Windows' && 'cl' || '' }}
         run: >-
-          cmake ${{ matrix.cmake_args }} ${{ env.CMAKE_ARGS_EXTRA }}
+          cmake -B build
+          -DBULK=ON -DFFMPEG=OFF -DHSS1394=ON -DLOCALECOMPARE=ON -DMAD=ON
+          -DMEDIAFOUNDATION=ON -DMODPLUG=ON -DQT6=ON -DWAVPACK=ON
+          -DVCPKG_TARGET_TRIPLET=x64-windows-release
           -DCMAKE_BUILD_TYPE=RelWithDebInfo
           -DCMAKE_PREFIX_PATH="${{ env.CMAKE_PREFIX_PATH }}"
-          -DWARNINGS_FATAL=OFF
-          -DDEBUG_ASSERTIONS_FATAL=OFF
-          -DBUILD_TESTING=OFF
-          -DBUILD_BENCH=OFF
-          -DBATTERY=ON
-          -DBROADCAST=ON
-          -DDOWNLOAD_MANUAL=OFF
-          -DHID=ON
-          -DKEYFINDER=ON
-          -DLILV=ON
-          -DOPUS=ON
-          -DQTKEYCHAIN=ON
-          -DVINYLCONTROL=ON
-          ..
+          -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
+          -DSCCACHE_SUPPORT=ON
+          -DWARNINGS_FATAL=OFF -DDEBUG_ASSERTIONS_FATAL=OFF
+          -DBUILD_TESTING=OFF -DBUILD_BENCH=OFF -DDOWNLOAD_MANUAL=OFF
+          -DBATTERY=ON -DBROADCAST=ON -DHID=ON -DKEYFINDER=ON -DLILV=ON
+          -DOPUS=ON -DQTKEYCHAIN=ON -DVINYLCONTROL=ON
+        env:
+          CC: cl
+          CXX: cl
+
+      - uses: ammaraskar/msvc-problem-matcher@0.3.0
 
       - name: Build
+        run: cmake --build build --config RelWithDebInfo
+
+      - name: Package
         working-directory: build
-        run: cmake --build . --config RelWithDebInfo
+        run: cpack -G WIX -V
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mixxx-SoundCloud-Windows
+          path: build/*.msi
+          if-no-files-found: error
+
+  macos:
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.mac) ||
+      contains(github.event.head_commit.message, '[mac]')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS Apple Silicon
+            buildenv_script: tools/macos_arm64-cross-release_buildenv.sh
+            triplet: arm64-osx-min1100-release
+            artifact: Mixxx-SoundCloud-macOS-AppleSilicon
+          - name: macOS Intel
+            buildenv_script: tools/macos_release_buildenv.sh
+            triplet: x64-osx-min1100-release
+            artifact: Mixxx-SoundCloud-macOS-Intel
+    name: ${{ matrix.name }}
+    runs-on: macos-15-intel
+    timeout-minutes: 330
+    env:
+      BUILDENV_BASEPATH: /Users/runner/buildenv
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Ensure tags are fetched
+        run: git fetch origin --force --tags
+
+      - uses: jwlawson/actions-setup-cmake@v2.2
+        with:
+          cmake-version: "3.21.x"
+
+      - name: Install ccache
+        run: brew install ccache
+
+      - name: Build environment name
+        run: ${{ matrix.buildenv_script }} name
+
+      - name: Cache build environment
+        uses: actions/cache@v4
+        with:
+          path: /Users/runner/buildenv
+          key: buildenv-${{ matrix.triplet }}-${{ env.BUILDENV_NAME }}
+
+      - name: Cache compiled objects (ccache)
+        uses: actions/cache@v4
+        with:
+          path: /Users/runner/Library/Caches/ccache
+          key: ccache-${{ matrix.triplet }}-${{ github.run_number }}
+          restore-keys: ccache-${{ matrix.triplet }}-
+
+      - name: Set up build environment
+        run: ${{ matrix.buildenv_script }} setup
+
+      - name: Configure
+        run: >-
+          ccache --max-size=2G &&
+          cmake -B build
+          -DBULK=ON -DCOREAUDIO=ON -DHSS1394=ON -DMACOS_BUNDLE=ON -DMODPLUG=ON
+          -DQT6=ON -DWAVPACK=ON -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
+          ${{ env.CMAKE_ARGS_EXTRA }}
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_PREFIX_PATH="${{ env.CMAKE_PREFIX_PATH }}"
+          -DWARNINGS_FATAL=OFF -DDEBUG_ASSERTIONS_FATAL=OFF
+          -DBUILD_TESTING=OFF -DBUILD_BENCH=OFF -DDOWNLOAD_MANUAL=OFF
+          -DBATTERY=ON -DBROADCAST=ON -DHID=ON -DKEYFINDER=ON -DLILV=ON
+          -DOPUS=ON -DQTKEYCHAIN=ON -DVINYLCONTROL=ON
+
+      - name: Build
+        run: cmake --build build --config RelWithDebInfo
 
       - name: Package
         uses: nick-fields/retry@v4
@@ -122,13 +174,10 @@ jobs:
           timeout_minutes: 30
           max_attempts: 6
           retry_wait_seconds: 1
-          command: |
-            cd build
-            cpack -G ${{ matrix.cpack_generator }} -V
+          command: cd build && cpack -G DragNDrop -V
 
-      - name: Upload installer
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact_name }}
-          path: ${{ matrix.artifact_path }}
+          name: ${{ matrix.artifact }}
+          path: build/*.dmg
           if-no-files-found: error
