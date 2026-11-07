@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QFileSystemWatcher>
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -60,6 +61,7 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
     void slotLoadDeck2();
     void slotChooseFolder();
     void slotOpenFolder();
+    void slotStyleFileChanged();
 
   private:
     enum class After {
@@ -105,6 +107,8 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
     TrackPointer trackForUrl(const QString& url);
     void loadArtwork(const QString& trackUrl, const QString& artUrl);
     void setBusy(bool busy);
+    QString styleFile() const;
+    void applyStyle();
 
     const UserSettingsPointer m_pConfig;
     Library* const m_pLibrary;
@@ -132,6 +136,7 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
     QByteArray m_downloadBuffer;
     QString m_lastError;
     QNetworkAccessManager* m_pNetwork;
+    QFileSystemWatcher m_styleWatcher;
 
     QHash<QString, QJsonObject> m_trackInfo; // url -> datos del tema
     QHash<QString, QPixmap> m_artwork;       // url del tema -> portada

@@ -4,6 +4,7 @@
 #include <QComboBox>
 #include <QDesktopServices>
 #include <QDir>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
@@ -30,6 +31,7 @@
 #include <QStandardPaths>
 #include <QStyledItemDelegate>
 #include <QTableWidget>
+#include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <algorithm>
@@ -364,7 +366,11 @@ DlgSoundCloud::DlgSoundCloud(WLibrary* parent,
           m_currentAfter(After::Nothing) {
     setObjectName(QStringLiteral("SoundCloudRoot"));
     setAttribute(Qt::WA_StyledBackground, true);
-    setStyleSheet(kStyleSheet);
+    applyStyle();
+    connect(&m_styleWatcher,
+            &QFileSystemWatcher::fileChanged,
+            this,
+            &DlgSoundCloud::slotStyleFileChanged);
 
     auto* pRoot = new QHBoxLayout(this);
     pRoot->setContentsMargins(8, 8, 8, 8);
@@ -1232,6 +1238,46 @@ void DlgSoundCloud::slotChooseFolder() {
         m_pConfig->setValue(kDownloadDirKey, dir);
         setStatus(tr("Las descargas se guardan en %1").arg(QDir::toNativeSeparators(dir)));
     }
+}
+
+// Estilos en vivo: <carpeta SCDL>/ui/soundcloud.qss se aplica al guardarlo,
+// sin recompilar ni reiniciar Mixxx.
+QString DlgSoundCloud::styleFile() const {
+    return QDir(bridgeDir()).filePath(QStringLiteral("ui/soundcloud.qss"));
+}
+
+void DlgSoundCloud::applyStyle() {
+    const QString path = styleFile();
+    QFile file(path);
+    if (!file.exists() && QDir(bridgeDir()).exists()) {
+        // Primera vez: dejar una copia editable de los estilos de fabrica
+        QDir().mkpath(QFileInfo(path).absolutePath());
+        if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            file.write(kStyleSheet.toUtf8());
+            file.close();
+        }
+    }
+    QString style = kStyleSheet;
+    if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        const QString custom = QString::fromUtf8(file.readAll());
+        file.close();
+        if (!custom.trimmed().isEmpty()) {
+            style = custom;
+        }
+    }
+    setStyleSheet(style);
+    if (QFileInfo::exists(path) && !m_styleWatcher.files().contains(path)) {
+        m_styleWatcher.addPath(path);
+    }
+}
+
+void DlgSoundCloud::slotStyleFileChanged() {
+    // Algunos editores reemplazan el archivo al guardar: esperar un instante
+    // y volver a vigilarlo.
+    QTimer::singleShot(150, this, [this]() {
+        m_styleWatcher.removePaths(m_styleWatcher.files());
+        applyStyle();
+    });
 }
 
 void DlgSoundCloud::slotOpenFolder() {
