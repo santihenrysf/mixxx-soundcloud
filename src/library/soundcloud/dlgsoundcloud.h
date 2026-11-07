@@ -59,7 +59,6 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
     void slotChangeProfile();
     void slotConnectProfile();
     void slotCancelProfile();
-    void slotListFinished(int exitCode, QProcess::ExitStatus exitStatus);
     void slotDownloadOutput();
     void slotDownloadFinished(int exitCode, QProcess::ExitStatus exitStatus);
     void slotCellClicked(int row, int column);
@@ -104,6 +103,16 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
 
     void setHeader(const QString& title, const QString& subtitle);
     void runList(const QStringList& args, ListKind kind, const QString& busyText);
+    void startList(const QStringList& args, ListKind kind, const QString& key);
+    void listFinished(const QString& key, ListKind kind, QProcess* pProcess);
+    void showListResult(ListKind kind, const QJsonObject& result);
+    void handleProfileResult(const QJsonObject& result);
+    void updateLoading();
+    void prefetch();
+    void loadDiskCache();
+    void saveDiskCache() const;
+    QString cacheFile() const;
+    void loadAvatar(const QString& url);
     void fillTracks(const QJsonArray& results);
     void fillPlaylists(const QJsonArray& playlists);
     void showDownloadsPage();
@@ -124,7 +133,6 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
     void handleAfter(const QString& url, After after);
     TrackPointer trackForUrl(const QString& url);
     void loadArtwork(const QString& trackUrl, const QString& artUrl);
-    void setBusy(bool busy);
     void setGridMode(bool grid);
     void setResultsVisible(bool visible);
     void showProfileCard(bool changing);
@@ -156,7 +164,15 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
     QPushButton* m_pDownloadAllButton;
     QPushButton* m_pFolderButton;
     QPushButton* m_pOpenFolderButton;
-    QPushButton* m_pProfileButton;
+    QPushButton* m_pProfileButton; // "Conectar SoundCloud" (sin perfil)
+    QWidget* m_pProfileRow;        // foto + @usuario + icono cambiar
+    QLabel* m_pAvatar;
+    QLabel* m_pUserLabel;
+    QToolButton* m_pChangeButton;
+    QPixmap m_avatar;
+    QWidget* m_pLoading;       // carga sin datos todavia (spinner grande)
+    QLabel* m_pLoadingText;
+    QWidget* m_pHeaderSpinner; // actualizando datos que ya se ven
     QWidget* m_pProfileCard;
     QWidget* m_pCardForm;
     QWidget* m_pCardDone;
@@ -171,8 +187,11 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
     QProgressBar* m_pProgress;
 
     Page m_page;
-    QProcess* m_pListProcess;
-    ListKind m_listKind;
+    // Listados: varios a la vez, cacheados por pedido (cambio de pestana instantaneo)
+    QHash<QString, QProcess*> m_listProcs;   // pedido -> proceso en curso
+    QHash<QString, QJsonObject> m_listCache; // pedido -> ultimo resultado
+    QHash<QString, qint64> m_listCacheTime;  // pedido -> cuando se obtuvo (ms)
+    QString m_activeKey;                     // pedido que se esta mostrando
     QProcess* m_pDownloadProcess;
     QByteArray m_downloadBuffer;
     QString m_lastError;

@@ -3,7 +3,12 @@
 #include <QColor>
 #include <QComboBox>
 #include <QCursor>
+#include <QDateTime>
 #include <QDrag>
+#include <QLocale>
+#include <QNetworkDiskCache>
+#include <QSaveFile>
+#include <QScrollBar>
 #include <QPointer>
 #include <QDesktopServices>
 #include <QDir>
@@ -60,6 +65,16 @@ const ConfigKey kDownloadDirKey(kConfigGroup, QStringLiteral("DownloadDir"));
 const ConfigKey kProfileKey(kConfigGroup, QStringLiteral("Profile"));
 const ConfigKey kProfileNameKey(kConfigGroup, QStringLiteral("ProfileName"));
 const ConfigKey kViewModeKey(kConfigGroup, QStringLiteral("ViewMode"));
+const ConfigKey kProfileAvatarKey(kConfigGroup, QStringLiteral("ProfileAvatar"));
+
+// Un listado cacheado se muestra al instante; si tiene mas de esto se
+// actualiza en segundo plano.
+constexpr qint64 kFreshMs = 3 * 60 * 1000;
+
+// Texto segun el idioma de Mixxx (espanol o ingles)
+QString uiText(const QString& es, const QString& en) {
+    return QLocale().language() == QLocale::Spanish ? es : en;
+}
 
 // Datos guardados en la celda del tema
 constexpr int kUrlRole = Qt::UserRole + 1;
@@ -211,6 +226,15 @@ QPushButton[scChip="true"] {
   padding: 8px 10px; font-size: 12px; text-align: left;
 }
 QPushButton[scChip="true"]:hover { border-color: #ff6a1a; color: #ffffff; }
+#scProfileRow { background: #1c1c1f; border: 1px solid #2f2f34; border-radius: 10px; }
+#scUser { color: #ececee; font-size: 12px; font-weight: 600; background: transparent; }
+#scAvatar { background: transparent; }
+QToolButton#scChange {
+  background: transparent; color: #8a8a93; border: none; border-radius: 7px;
+  min-width: 26px; max-width: 26px; min-height: 26px; max-height: 26px; font-size: 14px;
+}
+QToolButton#scChange:hover { background: #2e2e33; color: #ff6a1a; }
+#scLoadingText { color: #8a8a93; font-size: 12px; }
 #scProgress { background: #26262a; border: none; border-radius: 2px; max-height: 4px; }
 #scProgress::chunk { background: #ff6a1a; border-radius: 2px; }
 #SoundCloudRoot QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }
@@ -760,6 +784,72 @@ class SoundCloudGrid : public QListView {
     }
 };
 
+// Indicador de carga: arco que gira (solo anima mientras se ve)
+class Spinner : public QWidget {
+  public:
+    Spinner(int size, QWidget* parent)
+            : QWidget(parent),
+              m_angle(0) {
+        setFixedSize(size, size);
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        m_timer.setInterval(16);
+        QObject::connect(&m_timer, &QTimer::timeout, this, [this]() {
+            m_angle = (m_angle + 9) % 360;
+            update();
+        });
+    }
+
+  protected:
+    void showEvent(QShowEvent* pEvent) override {
+        m_timer.start();
+        QWidget::showEvent(pEvent);
+    }
+    void hideEvent(QHideEvent* pEvent) override {
+        m_timer.stop();
+        QWidget::hideEvent(pEvent);
+    }
+    void paintEvent(QPaintEvent* pEvent) override {
+        Q_UNUSED(pEvent);
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        const qreal w = qMax(2.0, width() / 11.0);
+        const QRectF r = QRectF(rect()).adjusted(w, w, -w, -w);
+        p.setPen(QPen(QColor(0x2f, 0x2f, 0x34), w));
+        p.drawEllipse(r);
+        p.setPen(QPen(kAccent, w, Qt::SolidLine, Qt::RoundCap));
+        p.drawArc(r, -m_angle * 16, 100 * 16);
+    }
+
+  private:
+    QTimer m_timer;
+    int m_angle;
+};
+
+// Foto de perfil redonda; sin foto, la inicial del usuario
+QPixmap avatarPixmap(const QPixmap& source, const QString& name, int size) {
+    if (!source.isNull()) {
+        return roundedPixmap(source, size, size / 2);
+    }
+    QPixmap result(size * 2, size * 2);
+    result.fill(Qt::transparent);
+    QPainter p(&result);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(0x3a, 0x3a, 0x40));
+    p.drawEllipse(0, 0, size * 2, size * 2);
+    QFont font = p.font();
+    font.setBold(true);
+    font.setPixelSize(size);
+    p.setFont(font);
+    p.setPen(kText);
+    p.drawText(QRect(0, 0, size * 2, size * 2),
+            Qt::AlignCenter,
+            name.isEmpty() ? QStringLiteral("?") : name.left(1).toUpper());
+    p.end();
+    result.setDevicePixelRatio(2.0);
+    return result;
+}
+
 } // anonymous namespace
 
 DlgSoundCloud::DlgSoundCloud(WLibrary* parent,
@@ -769,8 +859,6 @@ DlgSoundCloud::DlgSoundCloud(WLibrary* parent,
           m_pConfig(pConfig),
           m_pLibrary(pLibrary),
           m_page(Page::Search),
-          m_pListProcess(nullptr),
-          m_listKind(ListKind::Tracks),
           m_pDownloadProcess(nullptr),
           m_pNetwork(new QNetworkAccessManager(this)),
           m_currentAfter(After::Nothing) {
@@ -806,11 +894,34 @@ DlgSoundCloud::DlgSoundCloud(WLibrary* parent,
     m_pProfileButton->setProperty("scChip", true);
     m_pProfileButton->setCursor(Qt::PointingHandCursor);
     m_pProfileButton->setFixedWidth(176);
+    // Perfil conectado: foto, @usuario y un icono para cambiarlo
+    m_pProfileRow = new QWidget(this);
+    m_pProfileRow->setObjectName(QStringLiteral("scProfileRow"));
+    m_pProfileRow->setAttribute(Qt::WA_StyledBackground, true);
+    m_pProfileRow->setFixedWidth(176);
+    auto* pRow = new QHBoxLayout(m_pProfileRow);
+    pRow->setContentsMargins(8, 6, 4, 6);
+    pRow->setSpacing(8);
+    m_pAvatar = new QLabel(m_pProfileRow);
+    m_pAvatar->setObjectName(QStringLiteral("scAvatar"));
+    m_pAvatar->setFixedSize(28, 28);
+    m_pUserLabel = new QLabel(m_pProfileRow);
+    m_pUserLabel->setObjectName(QStringLiteral("scUser"));
+    m_pChangeButton = new QToolButton(m_pProfileRow);
+    m_pChangeButton->setObjectName(QStringLiteral("scChange"));
+    m_pChangeButton->setText(QStringLiteral("⇄"));
+    m_pChangeButton->setToolTip(uiText(QStringLiteral("Cambiar perfil"), QStringLiteral("Change profile")));
+    m_pChangeButton->setCursor(Qt::PointingHandCursor);
+    pRow->addWidget(m_pAvatar);
+    pRow->addWidget(m_pUserLabel, 1);
+    pRow->addWidget(m_pChangeButton);
+    m_avatar.load(QDir(bridgeDir()).filePath(QStringLiteral(".avatar.png")));
     m_pFolderButton = new QPushButton(tr("Carpeta de descargas"), this);
     prepareButton(m_pFolderButton, "scLink");
     m_pOpenFolderButton = new QPushButton(tr("Abrir carpeta"), this);
     prepareButton(m_pOpenFolderButton, "scLink");
     pSide->addWidget(m_pProfileButton);
+    pSide->addWidget(m_pProfileRow);
     pSide->addWidget(m_pFolderButton);
     pSide->addWidget(m_pOpenFolderButton);
     pRoot->addLayout(pSide);
@@ -855,6 +966,11 @@ DlgSoundCloud::DlgSoundCloud(WLibrary* parent,
     m_pDeck2Button->setToolTip(tr("Descarga (si hace falta) y carga el tema elegido en el Deck 2"));
     m_pDownloadButton->setToolTip(tr("Descarga los temas seleccionados"));
     m_pDownloadAllButton->setToolTip(tr("Descarga toda la lista"));
+    m_pHeaderSpinner = new Spinner(16, pPanel);
+    m_pHeaderSpinner->setToolTip(uiText(QStringLiteral("Actualizando…"), QStringLiteral("Updating…")));
+    m_pHeaderSpinner->setVisible(false);
+    pHeader->addWidget(m_pHeaderSpinner, 0, Qt::AlignBottom);
+    pHeader->addSpacing(8);
     m_pGridButton = new QToolButton(pPanel);
     m_pGridButton->setText(QStringLiteral("▦"));
     m_pGridButton->setToolTip(tr("Vista grilla"));
@@ -1008,6 +1124,20 @@ DlgSoundCloud::DlgSoundCloud(WLibrary* parent,
     connect(m_pGrid, &QListView::clicked, this, &DlgSoundCloud::slotGridClicked);
     connect(m_pGrid, &QListView::doubleClicked, this, &DlgSoundCloud::slotGridDoubleClicked);
 
+    // Cargando (todavia sin nada que mostrar)
+    m_pLoading = new QWidget(pPanel);
+    auto* pLoadingLayout = new QVBoxLayout(m_pLoading);
+    pLoadingLayout->setSpacing(12);
+    pLoadingLayout->addStretch(2);
+    pLoadingLayout->addWidget(new Spinner(38, m_pLoading), 0, Qt::AlignHCenter);
+    m_pLoadingText = new QLabel(m_pLoading);
+    m_pLoadingText->setObjectName(QStringLiteral("scLoadingText"));
+    m_pLoadingText->setAlignment(Qt::AlignCenter);
+    pLoadingLayout->addWidget(m_pLoadingText);
+    pLoadingLayout->addStretch(3);
+    m_pLoading->setVisible(false);
+    pMain->addWidget(m_pLoading, 1);
+
     auto* pFooter = new QHBoxLayout();
     m_pStatusLabel = new QLabel(pPanel);
     m_pStatusLabel->setObjectName(QStringLiteral("scStatus"));
@@ -1031,6 +1161,7 @@ DlgSoundCloud::DlgSoundCloud(WLibrary* parent,
             this,
             &DlgSoundCloud::slotPlaylistChosen);
     connect(m_pProfileButton, &QPushButton::clicked, this, &DlgSoundCloud::slotChangeProfile);
+    connect(m_pChangeButton, &QToolButton::clicked, this, &DlgSoundCloud::slotChangeProfile);
     connect(m_pConnectButton, &QPushButton::clicked, this, &DlgSoundCloud::slotConnectProfile);
     connect(m_pCancelButton, &QPushButton::clicked, this, &DlgSoundCloud::slotCancelProfile);
     connect(m_pProfileEdit, &QLineEdit::returnPressed, this, &DlgSoundCloud::slotConnectProfile);
@@ -1075,11 +1206,29 @@ DlgSoundCloud::DlgSoundCloud(WLibrary* parent,
     setHeader(tr("Buscar"), tr("Encontrá cualquier tema de SoundCloud y llevalo al deck"));
     setStatus(tr("Doble click en un tema: se descarga y se carga en el primer deck libre. "
                  "Los descargados se pueden arrastrar a cualquier deck."));
+
+    // Portadas y foto de perfil guardadas en disco: aparecen al instante
+    auto* pDiskCache = new QNetworkDiskCache(this);
+    pDiskCache->setCacheDirectory(
+            QStandardPaths::writableLocation(QStandardPaths::CacheLocation) +
+            QStringLiteral("/soundcloud-art"));
+    pDiskCache->setMaximumCacheSize(200 * 1024 * 1024);
+    m_pNetwork->setCache(pDiskCache);
+
+    // Likes y playlists de la ultima vez: se ven al instante y se actualizan solos
+    loadDiskCache();
+    QTimer::singleShot(1500, this, [this]() { prefetch(); });
+    const QString avatarUrl = m_pConfig->getValueString(kProfileAvatarKey);
+    if (!avatarUrl.isEmpty()) {
+        loadAvatar(avatarUrl);
+    }
 }
 
 DlgSoundCloud::~DlgSoundCloud() {
     DragAndDropHelper::setRemoteDropHandler(nullptr);
-    for (QProcess* pProcess : {m_pListProcess, m_pDownloadProcess}) {
+    QList<QProcess*> processes = m_listProcs.values();
+    processes.append(m_pDownloadProcess);
+    for (QProcess* pProcess : std::as_const(processes)) {
         if (pProcess && pProcess->state() != QProcess::NotRunning) {
             pProcess->disconnect(this);
             pProcess->kill();
@@ -1256,6 +1405,7 @@ void DlgSoundCloud::slotNavChanged(int index) {
 
 void DlgSoundCloud::openPage(Page page) {
     m_page = page;
+    m_activeKey.clear();
     hideProfileCard();
     m_pSearchEdit->setVisible(m_page == Page::Search);
     m_pPlaylistCombo->setVisible(false);
@@ -1266,6 +1416,7 @@ void DlgSoundCloud::openPage(Page page) {
         setHeader(m_page == Page::Likes ? tr("Mis likes") : tr("Mis playlists"),
                 tr("Conectá tu perfil para verlos acá"));
         showProfileCard(false);
+        updateLoading();
         return;
     }
     const QString user = m_pConfig->getValueString(kProfileNameKey);
@@ -1280,14 +1431,12 @@ void DlgSoundCloud::openPage(Page page) {
         break;
     case Page::Likes:
         setHeader(tr("Mis likes"), user.isEmpty() ? QString() : QStringLiteral("@") + user);
-        m_pTable->setRowCount(0);
         runList({QStringLiteral("likes"), profile(false), QStringLiteral("300")},
                 ListKind::Tracks,
                 tr("Cargando tus likes…"));
         break;
     case Page::Playlists:
         setHeader(tr("Mis playlists"), tr("Elegí una playlist para ver sus temas"));
-        m_pTable->setRowCount(0);
         runList({QStringLiteral("playlists"), profile(false)},
                 ListKind::Playlists,
                 tr("Cargando tus playlists…"));
@@ -1296,6 +1445,7 @@ void DlgSoundCloud::openPage(Page page) {
         showDownloadsPage();
         break;
     }
+    updateLoading();
 }
 
 // ------------------------------------------------------------- perfil
@@ -1317,6 +1467,8 @@ void DlgSoundCloud::showProfileCard(bool changing) {
     m_pGridButton->setVisible(false);
     m_pListButton->setVisible(false);
     m_pProfileCard->setVisible(true);
+    m_pLoading->setVisible(false);
+    m_pHeaderSpinner->setVisible(false);
     m_pProfileEdit->setFocus();
     m_pProfileEdit->selectAll();
     setStatus(QString());
@@ -1324,7 +1476,7 @@ void DlgSoundCloud::showProfileCard(bool changing) {
 
 void DlgSoundCloud::hideProfileCard() {
     m_pProfileCard->setVisible(false);
-    setResultsVisible(true);
+    updateLoading();
     m_pDownloadAllButton->setVisible(true);
     m_pGridButton->setVisible(true);
     m_pListButton->setVisible(true);
@@ -1340,14 +1492,39 @@ void DlgSoundCloud::setProfileError(const QString& text) {
 
 void DlgSoundCloud::updateProfileButton() {
     const QString user = m_pConfig->getValueString(kProfileNameKey);
-    if (m_pConfig->getValueString(kProfileKey).isEmpty()) {
-        m_pProfileButton->setText(QStringLiteral("＋  ") + tr("Conectar SoundCloud"));
+    const bool connected = !m_pConfig->getValueString(kProfileKey).isEmpty();
+    m_pProfileButton->setVisible(!connected);
+    m_pProfileRow->setVisible(connected);
+    if (!connected) {
+        m_pProfileButton->setText(QStringLiteral("＋  ") +
+                uiText(QStringLiteral("Conectar SoundCloud"), QStringLiteral("Connect SoundCloud")));
         m_pProfileButton->setToolTip(tr("Conectá tu perfil para ver tus likes y playlists"));
-    } else {
-        m_pProfileButton->setText(QStringLiteral("@%1  ·  %2")
-                                          .arg(user.isEmpty() ? tr("perfil") : user, tr("Cambiar")));
-        m_pProfileButton->setToolTip(m_pConfig->getValueString(kProfileKey));
+        return;
     }
+    const QString name = user.isEmpty() ? tr("perfil") : user;
+    m_pUserLabel->setText(m_pUserLabel->fontMetrics().elidedText(
+            QStringLiteral("@") + name, Qt::ElideRight, 100));
+    m_pProfileRow->setToolTip(m_pConfig->getValueString(kProfileKey));
+    m_pAvatar->setPixmap(avatarPixmap(m_avatar, name, 28));
+}
+
+void DlgSoundCloud::loadAvatar(const QString& url) {
+    if (url.isEmpty()) {
+        return;
+    }
+    QNetworkRequest request{QUrl(url)};
+    request.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::PreferCache);
+    QNetworkReply* pReply = m_pNetwork->get(request);
+    connect(pReply, &QNetworkReply::finished, this, [this, pReply]() {
+        pReply->deleteLater();
+        QPixmap pixmap;
+        if (pReply->error() != QNetworkReply::NoError || !pixmap.loadFromData(pReply->readAll())) {
+            return;
+        }
+        m_avatar = pixmap;
+        m_avatar.save(QDir(bridgeDir()).filePath(QStringLiteral(".avatar.png")));
+        updateProfileButton();
+    });
 }
 
 void DlgSoundCloud::slotConnectProfile() {
@@ -1399,12 +1576,6 @@ void DlgSoundCloud::slotChangeProfile() {
     showProfileCard(!profile(false).isEmpty());
 }
 
-void DlgSoundCloud::setBusy(bool busy) {
-    m_pNav->setEnabled(!busy);
-    m_pProfileButton->setEnabled(!busy);
-    m_pSearchEdit->setEnabled(!busy);
-}
-
 void DlgSoundCloud::showDownloadsPage() {
     setHeader(tr("Descargas"),
             m_sessionDownloads.isEmpty()
@@ -1420,48 +1591,87 @@ void DlgSoundCloud::showDownloadsPage() {
 
 // ------------------------------------------------------------- listados
 
+// Cada listado (busqueda, likes, una playlist...) se guarda por pedido.
+// Si ya esta en memoria se muestra al instante y, si es viejo, se
+// actualiza en segundo plano. Cambiar de pestana nunca espera ni corta
+// lo que se esta cargando en otra.
 void DlgSoundCloud::runList(const QStringList& args, ListKind kind, const QString& busyText) {
+    const QString key = args.join(QChar(0x1f));
+    if (kind == ListKind::Profile) {
+        startList(args, kind, key);
+        return;
+    }
+    m_activeKey = key;
+    m_pLoadingText->setText(busyText);
+    const auto cached = m_listCache.constFind(key);
+    if (cached != m_listCache.constEnd()) {
+        showListResult(kind, cached.value());
+        const qint64 age = QDateTime::currentMSecsSinceEpoch() - m_listCacheTime.value(key);
+        if (age > kFreshMs && !m_listProcs.contains(key)) {
+            startList(args, kind, key);
+        }
+    } else {
+        m_pTable->setRowCount(0);
+        setStatus(busyText);
+        if (!m_listProcs.contains(key)) {
+            startList(args, kind, key);
+        }
+    }
+    updateLoading();
+}
+
+void DlgSoundCloud::startList(const QStringList& args, ListKind kind, const QString& key) {
     if (!ensureBridge()) {
         return;
     }
-    if (m_pListProcess) {
-        m_pListProcess->disconnect(this);
-        m_pListProcess->kill();
-        m_pListProcess->deleteLater();
-        m_pListProcess = nullptr;
-    }
-    m_listKind = kind;
-    m_pListProcess = new QProcess(this);
-    m_pListProcess->setProcessEnvironment(processEnvironment());
-    m_pListProcess->setWorkingDirectory(bridgeDir());
-    connect(m_pListProcess, &QProcess::finished, this, &DlgSoundCloud::slotListFinished);
-    connect(m_pListProcess, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
-        if (error == QProcess::FailedToStart) {
-            setBusy(false);
-            setStatus(tr("No pude iniciar Python (%1). Abrí SCDL una vez para que "
-                         "se instale.")
-                              .arg(QDir::toNativeSeparators(pythonPath())),
-                    true);
+    // Las busquedas viejas que nadie va a ver se cortan; likes, playlists
+    // y playlists abiertas siguen, asi al volver ya estan.
+    const QStringList running = m_listProcs.keys();
+    for (const QString& other : running) {
+        if (other != key && other.startsWith(QStringLiteral("search")) &&
+                key.startsWith(QStringLiteral("search"))) {
+            QProcess* pOld = m_listProcs.take(other);
+            pOld->disconnect(this);
+            pOld->kill();
+            pOld->deleteLater();
         }
+    }
+    auto* pProcess = new QProcess(this);
+    pProcess->setProcessEnvironment(processEnvironment());
+    pProcess->setWorkingDirectory(bridgeDir());
+    m_listProcs.insert(key, pProcess);
+    connect(pProcess,
+            &QProcess::finished,
+            this,
+            [this, key, kind, pProcess](int, QProcess::ExitStatus) {
+                listFinished(key, kind, pProcess);
+            });
+    connect(pProcess, &QProcess::errorOccurred, this, [this, key, pProcess](QProcess::ProcessError error) {
+        if (error != QProcess::FailedToStart) {
+            return;
+        }
+        if (m_listProcs.value(key) == pProcess) {
+            m_listProcs.remove(key);
+        }
+        pProcess->deleteLater();
+        setStatus(tr("No pude iniciar Python (%1). Abrí SCDL una vez para que "
+                     "se instale.")
+                          .arg(QDir::toNativeSeparators(pythonPath())),
+                true);
+        updateLoading();
     });
-    setBusy(true);
-    setStatus(busyText);
     QStringList fullArgs{bridgeScript()};
     fullArgs.append(args);
-    m_pListProcess->start(pythonPath(), fullArgs);
+    pProcess->start(pythonPath(), fullArgs);
 }
 
-void DlgSoundCloud::slotListFinished(int exitCode, QProcess::ExitStatus exitStatus) {
-    Q_UNUSED(exitCode);
-    Q_UNUSED(exitStatus);
-    setBusy(false);
-    if (!m_pListProcess) {
-        return;
+void DlgSoundCloud::listFinished(const QString& key, ListKind kind, QProcess* pProcess) {
+    if (m_listProcs.value(key) == pProcess) {
+        m_listProcs.remove(key);
     }
-    const QByteArray output = m_pListProcess->readAllStandardOutput();
-    const QByteArray errors = m_pListProcess->readAllStandardError();
-    m_pListProcess->deleteLater();
-    m_pListProcess = nullptr;
+    const QByteArray output = pProcess->readAllStandardOutput();
+    const QByteArray errors = pProcess->readAllStandardError();
+    pProcess->deleteLater();
 
     QJsonObject result;
     for (const QByteArray& line : output.split('\n')) {
@@ -1470,47 +1680,78 @@ void DlgSoundCloud::slotListFinished(int exitCode, QProcess::ExitStatus exitStat
             result = doc.object();
         }
     }
-    if (m_listKind == ListKind::Profile) {
-        m_pConnectButton->setEnabled(true);
-        m_pConnectButton->setText(tr("Conectar"));
-        m_pCancelButton->setVisible(true);
-        if (!result.contains(QStringLiteral("user"))) {
-            const QString err = result.value(QStringLiteral("error")).toString();
-            setProfileError(err.contains(QStringLiteral("perfil"), Qt::CaseInsensitive) || err.isEmpty()
-                            ? tr("No encontramos ese perfil. Revisá el usuario o el link.")
-                            : tr("No pudimos verificarlo: %1").arg(err));
-            setStatus(QString());
-            return;
+    if (kind == ListKind::Profile) {
+        handleProfileResult(result);
+        return;
+    }
+    const bool ok = result.contains(QStringLiteral("results")) ||
+            (kind == ListKind::Playlists && result.contains(QStringLiteral("playlists")));
+    const bool active = key == m_activeKey && !m_pProfileCard->isVisible();
+    if (ok) {
+        const bool changed = m_listCache.value(key) != result;
+        const bool wasShown = active && m_listCache.contains(key);
+        m_listCache.insert(key, result);
+        m_listCacheTime.insert(key, QDateTime::currentMSecsSinceEpoch());
+        if (!key.startsWith(QStringLiteral("search")) && changed) {
+            saveDiskCache();
         }
-        const QJsonObject user = result.value(QStringLiteral("user")).toObject();
-        m_pConfig->setValue(kProfileKey, user.value(QStringLiteral("url")).toString());
-        m_pConfig->setValue(kProfileNameKey, user.value(QStringLiteral("username")).toString());
-        updateProfileButton();
-        m_pCardForm->setVisible(false);
-        m_pCardDoneText->setText(tr("Conectado como @%1").arg(user.value(QStringLiteral("username")).toString()));
-        m_pCardDone->setVisible(true);
+        if (active && (changed || !wasShown)) {
+            showListResult(kind, result);
+        }
+    } else if (active) {
+        const QString err = result.value(QStringLiteral("error")).toString();
+        const QString detail = err.isEmpty()
+                ? QString::fromUtf8(errors).trimmed().section('\n', -1)
+                : err;
+        if (m_listCache.contains(key)) {
+            // Sin internet o SoundCloud caido: se queda lo que ya se veia
+            setStatus(tr("Sin conexión: mostrando lo último guardado."), true);
+        } else {
+            setStatus(tr("No se pudo cargar. %1").arg(detail), true);
+        }
+    }
+    updateLoading();
+}
+
+void DlgSoundCloud::handleProfileResult(const QJsonObject& result) {
+    m_pConnectButton->setEnabled(true);
+    m_pConnectButton->setText(tr("Conectar"));
+    m_pCancelButton->setVisible(true);
+    if (!result.contains(QStringLiteral("user"))) {
+        const QString err = result.value(QStringLiteral("error")).toString();
+        setProfileError(err.contains(QStringLiteral("perfil"), Qt::CaseInsensitive) || err.isEmpty()
+                        ? tr("No encontramos ese perfil. Revisá el usuario o el link.")
+                        : tr("No pudimos verificarlo: %1").arg(err));
         setStatus(QString());
-        const Page next = m_pendingPage;
-        QTimer::singleShot(1100, this, [this, next]() {
-            if (m_pNav->currentRow() != static_cast<int>(next)) {
-                m_pNav->setCurrentRow(static_cast<int>(next)); // dispara openPage
-            } else {
-                openPage(next);
-            }
-        });
         return;
     }
-    if (result.contains(QStringLiteral("error"))) {
-        setStatus(tr("Error: %1").arg(result.value(QStringLiteral("error")).toString()), true);
-        return;
-    }
-    if (m_listKind == ListKind::Playlists && result.contains(QStringLiteral("playlists"))) {
+    const QJsonObject user = result.value(QStringLiteral("user")).toObject();
+    m_pConfig->setValue(kProfileKey, user.value(QStringLiteral("url")).toString());
+    m_pConfig->setValue(kProfileNameKey, user.value(QStringLiteral("username")).toString());
+    const QString avatarUrl = user.value(QStringLiteral("avatar")).toString().replace(
+            QStringLiteral("-large."), QStringLiteral("-t200x200."));
+    m_pConfig->setValue(kProfileAvatarKey, avatarUrl);
+    m_avatar = QPixmap();
+    updateProfileButton();
+    loadAvatar(avatarUrl);
+    prefetch(); // likes y playlists del perfil nuevo, ya mismo
+    m_pCardForm->setVisible(false);
+    m_pCardDoneText->setText(tr("Conectado como @%1").arg(user.value(QStringLiteral("username")).toString()));
+    m_pCardDone->setVisible(true);
+    setStatus(QString());
+    const Page next = m_pendingPage;
+    QTimer::singleShot(1100, this, [this, next]() {
+        if (m_pNav->currentRow() != static_cast<int>(next)) {
+            m_pNav->setCurrentRow(static_cast<int>(next)); // dispara openPage
+        } else {
+            openPage(next);
+        }
+    });
+}
+
+void DlgSoundCloud::showListResult(ListKind kind, const QJsonObject& result) {
+    if (kind == ListKind::Playlists && result.contains(QStringLiteral("playlists"))) {
         fillPlaylists(result.value(QStringLiteral("playlists")).toArray());
-        return;
-    }
-    if (!result.contains(QStringLiteral("results"))) {
-        const QString detail = QString::fromUtf8(errors).trimmed().section('\n', -1);
-        setStatus(tr("No se pudo cargar. %1").arg(detail), true);
         return;
     }
     const QJsonArray results = result.value(QStringLiteral("results")).toArray();
@@ -1528,6 +1769,70 @@ void DlgSoundCloud::slotListFinished(int exitCode, QProcess::ExitStatus exitStat
                     ? tr("Sin resultados.")
                     : tr("A / B: cargar en ese deck  ·  doble click: primer deck libre  ·  "
                          "arrastrá cualquier tema a un deck  ·  ↓: solo descargar"));
+}
+
+// Indicador de carga: grande si todavia no hay nada, chico en el
+// encabezado si se estan actualizando datos que ya se ven.
+void DlgSoundCloud::updateLoading() {
+    if (m_pProfileCard->isVisible()) {
+        m_pLoading->setVisible(false);
+        m_pHeaderSpinner->setVisible(false);
+        return;
+    }
+    const bool busy = !m_activeKey.isEmpty() && m_listProcs.contains(m_activeKey);
+    const bool empty = m_pTable->rowCount() == 0;
+    m_pLoading->setVisible(busy && empty);
+    m_pHeaderSpinner->setVisible(busy && !empty);
+    setResultsVisible(!(busy && empty));
+}
+
+// Precarga likes y playlists para que esas pestanas abran al instante
+void DlgSoundCloud::prefetch() {
+    const QString prof = profile(false);
+    if (prof.isEmpty() || !QFileInfo::exists(bridgeScript())) {
+        return;
+    }
+    const QList<QPair<QStringList, ListKind>> lists{
+            {{QStringLiteral("likes"), prof, QStringLiteral("300")}, ListKind::Tracks},
+            {{QStringLiteral("playlists"), prof}, ListKind::Playlists},
+    };
+    for (const auto& [args, kind] : lists) {
+        const QString key = args.join(QChar(0x1f));
+        const qint64 age = QDateTime::currentMSecsSinceEpoch() - m_listCacheTime.value(key);
+        if (!m_listProcs.contains(key) && (!m_listCache.contains(key) || age > kFreshMs)) {
+            startList(args, kind, key);
+        }
+    }
+}
+
+QString DlgSoundCloud::cacheFile() const {
+    return QDir(bridgeDir()).filePath(QStringLiteral(".mixxx_cache.json"));
+}
+
+void DlgSoundCloud::loadDiskCache() {
+    QFile file(cacheFile());
+    if (!file.open(QIODevice::ReadOnly)) {
+        return;
+    }
+    const QJsonObject all = QJsonDocument::fromJson(file.readAll()).object();
+    for (auto it = all.constBegin(); it != all.constEnd(); ++it) {
+        m_listCache.insert(it.key(), it.value().toObject());
+        m_listCacheTime.insert(it.key(), 0); // se muestra, pero se actualiza al abrir
+    }
+}
+
+void DlgSoundCloud::saveDiskCache() const {
+    QJsonObject all;
+    for (auto it = m_listCache.constBegin(); it != m_listCache.constEnd(); ++it) {
+        if (!it.key().startsWith(QStringLiteral("search"))) {
+            all.insert(it.key(), it.value());
+        }
+    }
+    QSaveFile file(cacheFile());
+    if (file.open(QIODevice::WriteOnly)) {
+        file.write(QJsonDocument(all).toJson(QJsonDocument::Compact));
+        file.commit();
+    }
 }
 
 void DlgSoundCloud::fillPlaylists(const QJsonArray& playlists) {
@@ -1579,12 +1884,13 @@ void DlgSoundCloud::openPlaylist(const QString& url, const QString& title) {
     setHeader(title, tr("Playlist"));
     m_pBackButton->setVisible(true);
     m_pDownloadAllButton->setVisible(true);
-    m_pTable->setRowCount(0);
     runList({QStringLiteral("playlist"), url}, ListKind::Tracks, tr("Cargando playlist…"));
 }
 
 void DlgSoundCloud::fillTracks(const QJsonArray& results) {
     m_pDownloadAllButton->setVisible(!results.isEmpty());
+    m_pTable->setUpdatesEnabled(false);
+    m_pGrid->setUpdatesEnabled(false);
     m_pTable->setRowCount(0);
     m_pTable->setRowCount(static_cast<int>(results.size()));
     int row = 0;
@@ -1628,6 +1934,10 @@ void DlgSoundCloud::fillTracks(const QJsonArray& results) {
         }
         ++row;
     }
+    m_pTable->scrollToTop();
+    m_pGrid->scrollToTop();
+    m_pTable->setUpdatesEnabled(true);
+    m_pGrid->setUpdatesEnabled(true);
     refreshDeckIndicators();
 }
 
@@ -1638,7 +1948,9 @@ void DlgSoundCloud::loadArtwork(const QString& trackUrl, const QString& artUrl) 
     // Pedir una portada un poco mas grande que la de 100 px por defecto
     QString url = artUrl;
     url.replace(QStringLiteral("-large."), QStringLiteral("-t300x300."));
-    QNetworkReply* pReply = m_pNetwork->get(QNetworkRequest(QUrl(url)));
+    QNetworkRequest request{QUrl(url)};
+    request.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::PreferCache);
+    QNetworkReply* pReply = m_pNetwork->get(request);
     connect(pReply, &QNetworkReply::finished, this, [this, pReply, trackUrl]() {
         pReply->deleteLater();
         if (pReply->error() != QNetworkReply::NoError) {
