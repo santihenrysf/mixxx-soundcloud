@@ -51,6 +51,7 @@ const QString kConfigGroup = QStringLiteral("[SoundCloud]");
 const ConfigKey kBridgeDirKey(kConfigGroup, QStringLiteral("BridgeDir"));
 const ConfigKey kDownloadDirKey(kConfigGroup, QStringLiteral("DownloadDir"));
 const ConfigKey kProfileKey(kConfigGroup, QStringLiteral("Profile"));
+const ConfigKey kProfileNameKey(kConfigGroup, QStringLiteral("ProfileName"));
 
 // Datos guardados en la celda del tema
 constexpr int kUrlRole = Qt::UserRole + 1;
@@ -124,6 +125,26 @@ QPushButton[scLink="true"] {
 }
 QPushButton[scLink="true"]:hover { color: #ffffff; }
 #scStatus { color: #8a8a93; font-size: 12px; }
+#scCard { background: #232327; border: 1px solid #2f2f34; border-radius: 14px; }
+#scCardTitle { color: #ffffff; font-size: 17px; font-weight: 600; }
+#scCardText { color: #8a8a93; font-size: 12px; }
+#scProfileEdit {
+  background: #1a1a1d; border: 1px solid #34343a; border-radius: 9px;
+  padding: 9px 12px; color: #ececee; font-size: 13px; selection-background-color: #ff6a1a;
+}
+#scProfileEdit:focus { border-color: #ff6a1a; }
+#scProfileEdit[invalid="true"] { border-color: #ff5d5d; }
+#scProfileError { color: #ff5d5d; font-size: 12px; }
+#scCheck {
+  color: #151517; background: #3ecf8e; border-radius: 22px; font-size: 22px; font-weight: 700;
+  min-width: 44px; max-width: 44px; min-height: 44px; max-height: 44px;
+}
+#scCardDoneText { color: #ffffff; font-size: 15px; font-weight: 600; }
+QPushButton[scChip="true"] {
+  background: #1c1c1f; color: #dcdce0; border: 1px solid #2f2f34; border-radius: 10px;
+  padding: 8px 10px; font-size: 12px; text-align: left;
+}
+QPushButton[scChip="true"]:hover { border-color: #ff6a1a; color: #ffffff; }
 #scProgress { background: #26262a; border: none; border-radius: 2px; max-height: 4px; }
 #scProgress::chunk { background: #ff6a1a; border-radius: 2px; }
 #SoundCloudRoot QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }
@@ -365,6 +386,7 @@ DlgSoundCloud::DlgSoundCloud(WLibrary* parent,
           m_pDownloadProcess(nullptr),
           m_pNetwork(new QNetworkAccessManager(this)),
           m_currentAfter(After::Nothing) {
+    m_pendingPage = Page::Search;
     setObjectName(QStringLiteral("SoundCloudRoot"));
     setAttribute(Qt::WA_StyledBackground, true);
     applyStyle();
@@ -391,8 +413,10 @@ DlgSoundCloud::DlgSoundCloud(WLibrary* parent,
     m_pNav->addItem(QStringLiteral("↓   ") + tr("Descargas"));
     m_pNav->setCurrentRow(0);
     pSide->addWidget(m_pNav, 1);
-    m_pProfileButton = new QPushButton(tr("Mi perfil de SoundCloud"), this);
-    prepareButton(m_pProfileButton, "scLink");
+    m_pProfileButton = new QPushButton(this);
+    m_pProfileButton->setProperty("scChip", true);
+    m_pProfileButton->setCursor(Qt::PointingHandCursor);
+    m_pProfileButton->setFixedWidth(176);
     m_pFolderButton = new QPushButton(tr("Carpeta de descargas"), this);
     prepareButton(m_pFolderButton, "scLink");
     m_pOpenFolderButton = new QPushButton(tr("Abrir carpeta"), this);
@@ -450,6 +474,77 @@ DlgSoundCloud::DlgSoundCloud(WLibrary* parent,
     m_pPlaylistCombo->setVisible(false);
     pMain->addWidget(m_pPlaylistCombo);
 
+    // ---- Tarjeta para conectar el perfil de SoundCloud
+    m_pProfileCard = new QWidget(pPanel);
+    auto* pCardOuter = new QHBoxLayout(m_pProfileCard);
+    pCardOuter->setContentsMargins(0, 24, 0, 24);
+    auto* pCard = new QWidget(m_pProfileCard);
+    pCard->setObjectName(QStringLiteral("scCard"));
+    pCard->setAttribute(Qt::WA_StyledBackground, true);
+    pCard->setFixedWidth(440);
+    auto* pCardLayout = new QVBoxLayout(pCard);
+    pCardLayout->setContentsMargins(24, 22, 24, 22);
+    pCardLayout->setSpacing(10);
+
+    m_pCardForm = new QWidget(pCard);
+    auto* pForm = new QVBoxLayout(m_pCardForm);
+    pForm->setContentsMargins(0, 0, 0, 0);
+    pForm->setSpacing(10);
+    m_pCardTitle = new QLabel(tr("Conectá tu SoundCloud"), m_pCardForm);
+    m_pCardTitle->setObjectName(QStringLiteral("scCardTitle"));
+    auto* pCardText = new QLabel(tr("Pegá el link de tu perfil o escribí tu usuario. "
+                                    "Lo usamos para mostrar tus likes y tus playlists."),
+            m_pCardForm);
+    pCardText->setObjectName(QStringLiteral("scCardText"));
+    pCardText->setWordWrap(true);
+    m_pProfileEdit = new QLineEdit(m_pCardForm);
+    m_pProfileEdit->setObjectName(QStringLiteral("scProfileEdit"));
+    m_pProfileEdit->setPlaceholderText(QStringLiteral("soundcloud.com/tu-usuario"));
+    m_pProfileEdit->setClearButtonEnabled(true);
+    m_pProfileError = new QLabel(m_pCardForm);
+    m_pProfileError->setObjectName(QStringLiteral("scProfileError"));
+    m_pProfileError->setWordWrap(true);
+    m_pProfileError->setVisible(false);
+    auto* pButtons = new QHBoxLayout();
+    pButtons->setSpacing(8);
+    m_pCancelButton = new QPushButton(tr("Cancelar"), m_pCardForm);
+    prepareButton(m_pCancelButton);
+    m_pConnectButton = new QPushButton(tr("Conectar"), m_pCardForm);
+    prepareButton(m_pConnectButton, "scPrimary");
+    m_pConnectButton->setDefault(true);
+    pButtons->addStretch(1);
+    pButtons->addWidget(m_pCancelButton);
+    pButtons->addWidget(m_pConnectButton);
+    pForm->addWidget(m_pCardTitle);
+    pForm->addWidget(pCardText);
+    pForm->addSpacing(4);
+    pForm->addWidget(m_pProfileEdit);
+    pForm->addWidget(m_pProfileError);
+    pForm->addSpacing(4);
+    pForm->addLayout(pButtons);
+
+    m_pCardDone = new QWidget(pCard);
+    auto* pDone = new QVBoxLayout(m_pCardDone);
+    pDone->setContentsMargins(0, 8, 0, 8);
+    pDone->setSpacing(10);
+    auto* pCheck = new QLabel(QStringLiteral("✓"), m_pCardDone);
+    pCheck->setObjectName(QStringLiteral("scCheck"));
+    pCheck->setAlignment(Qt::AlignCenter);
+    m_pCardDoneText = new QLabel(m_pCardDone);
+    m_pCardDoneText->setObjectName(QStringLiteral("scCardDoneText"));
+    m_pCardDoneText->setAlignment(Qt::AlignCenter);
+    pDone->addWidget(pCheck, 0, Qt::AlignHCenter);
+    pDone->addWidget(m_pCardDoneText);
+    m_pCardDone->setVisible(false);
+
+    pCardLayout->addWidget(m_pCardForm);
+    pCardLayout->addWidget(m_pCardDone);
+    pCardOuter->addStretch(1);
+    pCardOuter->addWidget(pCard, 0, Qt::AlignTop);
+    pCardOuter->addStretch(1);
+    m_pProfileCard->setVisible(false);
+    pMain->addWidget(m_pProfileCard);
+
     m_pTable = new SoundCloudTable(0, 3, pPanel);
     m_pTable->setObjectName(QStringLiteral("scTable"));
     m_pTable->setFrameShape(QFrame::NoFrame);
@@ -499,6 +594,11 @@ DlgSoundCloud::DlgSoundCloud(WLibrary* parent,
             this,
             &DlgSoundCloud::slotPlaylistChosen);
     connect(m_pProfileButton, &QPushButton::clicked, this, &DlgSoundCloud::slotChangeProfile);
+    connect(m_pConnectButton, &QPushButton::clicked, this, &DlgSoundCloud::slotConnectProfile);
+    connect(m_pCancelButton, &QPushButton::clicked, this, &DlgSoundCloud::slotCancelProfile);
+    connect(m_pProfileEdit, &QLineEdit::returnPressed, this, &DlgSoundCloud::slotConnectProfile);
+    connect(m_pProfileEdit, &QLineEdit::textEdited, this, [this]() { setProfileError(QString()); });
+    updateProfileButton();
     connect(m_pTable, &QTableWidget::cellClicked, this, &DlgSoundCloud::slotCellClicked);
     connect(m_pTable,
             &QTableWidget::cellDoubleClicked,
@@ -619,23 +719,28 @@ QString DlgSoundCloud::downloadDir() const {
 }
 
 QString DlgSoundCloud::profile(bool askIfMissing) {
-    QString value = m_pConfig->getValueString(kProfileKey);
-    if (value.isEmpty() && askIfMissing) {
-        bool ok = false;
-        value = QInputDialog::getText(this,
-                tr("Tu SoundCloud"),
-                tr("Pegá el link de tu perfil de SoundCloud\n"
-                   "(ej. https://soundcloud.com/tu-usuario) o tu usuario:"),
-                QLineEdit::Normal,
-                QString(),
-                &ok)
-                        .trimmed();
-        if (!ok || value.isEmpty()) {
-            return QString();
-        }
-        m_pConfig->setValue(kProfileKey, value);
+    Q_UNUSED(askIfMissing);
+    return m_pConfig->getValueString(kProfileKey);
+}
+
+QString DlgSoundCloud::normalizeProfile(const QString& input) {
+    QString value = input.trimmed();
+    if (value.startsWith(QLatin1Char('@'))) {
+        value.remove(0, 1);
     }
-    return value;
+    if (value.isEmpty()) {
+        return QString();
+    }
+    if (!value.contains(QStringLiteral("soundcloud.com"))) {
+        return QStringLiteral("https://soundcloud.com/") + value;
+    }
+    if (!value.startsWith(QStringLiteral("http"))) {
+        value = QStringLiteral("https://") + value;
+    }
+    // Quedarse solo con el usuario: https://soundcloud.com/usuario
+    const QUrl url(value);
+    const QString user = url.path().section(QLatin1Char('/'), 1, 1);
+    return user.isEmpty() ? QString() : QStringLiteral("https://soundcloud.com/") + user;
 }
 
 QProcessEnvironment DlgSoundCloud::processEnvironment() const {
@@ -681,9 +786,23 @@ void DlgSoundCloud::setHeader(const QString& title, const QString& subtitle) {
 }
 
 void DlgSoundCloud::slotNavChanged(int index) {
-    m_page = static_cast<Page>(index);
+    openPage(static_cast<Page>(index));
+}
+
+void DlgSoundCloud::openPage(Page page) {
+    m_page = page;
+    hideProfileCard();
     m_pSearchEdit->setVisible(m_page == Page::Search);
     m_pPlaylistCombo->setVisible(m_page == Page::Playlists && m_pPlaylistCombo->count() > 0);
+    const bool needsProfile = m_page == Page::Likes || m_page == Page::Playlists;
+    if (needsProfile && profile(false).isEmpty()) {
+        m_pendingPage = m_page;
+        setHeader(m_page == Page::Likes ? tr("Mis likes") : tr("Mis playlists"),
+                tr("Conectá tu perfil para verlos acá"));
+        showProfileCard(false);
+        return;
+    }
+    const QString user = m_pConfig->getValueString(kProfileNameKey);
     switch (m_page) {
     case Page::Search:
         setHeader(tr("Buscar"), tr("Encontrá cualquier tema de SoundCloud y llevalo al deck"));
@@ -693,31 +812,96 @@ void DlgSoundCloud::slotNavChanged(int index) {
             slotSearch();
         }
         break;
-    case Page::Likes: {
-        const QString user = profile(true);
-        setHeader(tr("Mis likes"), user.isEmpty() ? tr("Configurá tu perfil abajo a la izquierda") : user);
+    case Page::Likes:
+        setHeader(tr("Mis likes"), user.isEmpty() ? QString() : QStringLiteral("@") + user);
         m_pTable->setRowCount(0);
-        if (!user.isEmpty()) {
-            runList({QStringLiteral("likes"), user, QStringLiteral("300")},
-                    ListKind::Tracks,
-                    tr("Cargando tus likes…"));
-        }
+        runList({QStringLiteral("likes"), profile(false), QStringLiteral("300")},
+                ListKind::Tracks,
+                tr("Cargando tus likes…"));
         break;
-    }
-    case Page::Playlists: {
-        const QString user = profile(true);
+    case Page::Playlists:
         setHeader(tr("Mis playlists"), tr("Elegí una playlist para ver sus temas"));
         m_pTable->setRowCount(0);
-        if (!user.isEmpty()) {
-            runList({QStringLiteral("playlists"), user},
-                    ListKind::Playlists,
-                    tr("Cargando tus playlists…"));
-        }
+        runList({QStringLiteral("playlists"), profile(false)},
+                ListKind::Playlists,
+                tr("Cargando tus playlists…"));
         break;
-    }
     case Page::Downloads:
         showDownloadsPage();
         break;
+    }
+}
+
+// ------------------------------------------------------------- perfil
+
+void DlgSoundCloud::showProfileCard(bool changing) {
+    m_pCardTitle->setText(changing ? tr("Cambiar perfil de SoundCloud") : tr("Conectá tu SoundCloud"));
+    m_pProfileEdit->setText(changing ? m_pConfig->getValueString(kProfileKey) : QString());
+    m_pCancelButton->setVisible(true);
+    m_pConnectButton->setEnabled(true);
+    m_pConnectButton->setText(changing ? tr("Guardar") : tr("Conectar"));
+    m_pCardForm->setVisible(true);
+    m_pCardDone->setVisible(false);
+    setProfileError(QString());
+    m_pTable->setVisible(false);
+    m_pSearchEdit->setVisible(false);
+    m_pPlaylistCombo->setVisible(false);
+    for (QPushButton* pButton : {m_pDeck1Button, m_pDeck2Button, m_pDownloadButton, m_pDownloadAllButton}) {
+        pButton->setVisible(false);
+    }
+    m_pProfileCard->setVisible(true);
+    m_pProfileEdit->setFocus();
+    m_pProfileEdit->selectAll();
+    setStatus(QString());
+}
+
+void DlgSoundCloud::hideProfileCard() {
+    m_pProfileCard->setVisible(false);
+    m_pTable->setVisible(true);
+    for (QPushButton* pButton : {m_pDeck1Button, m_pDeck2Button, m_pDownloadButton, m_pDownloadAllButton}) {
+        pButton->setVisible(true);
+    }
+}
+
+void DlgSoundCloud::setProfileError(const QString& text) {
+    m_pProfileError->setText(text);
+    m_pProfileError->setVisible(!text.isEmpty());
+    m_pProfileEdit->setProperty("invalid", !text.isEmpty());
+    m_pProfileEdit->style()->unpolish(m_pProfileEdit);
+    m_pProfileEdit->style()->polish(m_pProfileEdit);
+}
+
+void DlgSoundCloud::updateProfileButton() {
+    const QString user = m_pConfig->getValueString(kProfileNameKey);
+    if (m_pConfig->getValueString(kProfileKey).isEmpty()) {
+        m_pProfileButton->setText(QStringLiteral("＋  ") + tr("Conectar SoundCloud"));
+        m_pProfileButton->setToolTip(tr("Conectá tu perfil para ver tus likes y playlists"));
+    } else {
+        m_pProfileButton->setText(QStringLiteral("@%1  ·  %2")
+                                          .arg(user.isEmpty() ? tr("perfil") : user, tr("Cambiar")));
+        m_pProfileButton->setToolTip(m_pConfig->getValueString(kProfileKey));
+    }
+}
+
+void DlgSoundCloud::slotConnectProfile() {
+    const QString url = normalizeProfile(m_pProfileEdit->text());
+    if (url.isEmpty()) {
+        setProfileError(tr("Escribí tu usuario o pegá el link de tu perfil."));
+        return;
+    }
+    setProfileError(QString());
+    m_pConnectButton->setEnabled(false);
+    m_pConnectButton->setText(tr("Verificando…"));
+    m_pCancelButton->setVisible(false);
+    runList({QStringLiteral("profile"), url}, ListKind::Profile, tr("Verificando tu perfil…"));
+}
+
+void DlgSoundCloud::slotCancelProfile() {
+    hideProfileCard();
+    if (profile(false).isEmpty() && (m_page == Page::Likes || m_page == Page::Playlists)) {
+        m_pNav->setCurrentRow(static_cast<int>(Page::Search));
+    } else {
+        openPage(m_page);
     }
 }
 
@@ -743,22 +927,14 @@ void DlgSoundCloud::slotPlaylistChosen(int index) {
 }
 
 void DlgSoundCloud::slotChangeProfile() {
-    bool ok = false;
-    const QString value = QInputDialog::getText(this,
-            tr("Tu SoundCloud"),
-            tr("Link de tu perfil de SoundCloud o tu usuario:"),
-            QLineEdit::Normal,
-            m_pConfig->getValueString(kProfileKey),
-            &ok)
-                                  .trimmed();
-    if (ok && !value.isEmpty()) {
-        m_pConfig->setValue(kProfileKey, value);
-        setStatus(tr("Perfil guardado: %1").arg(value));
-    }
+    m_pendingPage = (m_page == Page::Likes || m_page == Page::Playlists) ? m_page : Page::Likes;
+    setHeader(tr("Tu perfil"), tr("Conectá o cambiá tu cuenta de SoundCloud"));
+    showProfileCard(!profile(false).isEmpty());
 }
 
 void DlgSoundCloud::setBusy(bool busy) {
     m_pNav->setEnabled(!busy);
+    m_pProfileButton->setEnabled(!busy);
     m_pSearchEdit->setEnabled(!busy);
 }
 
@@ -826,6 +1002,36 @@ void DlgSoundCloud::slotListFinished(int exitCode, QProcess::ExitStatus exitStat
         if (doc.isObject()) {
             result = doc.object();
         }
+    }
+    if (m_listKind == ListKind::Profile) {
+        m_pConnectButton->setEnabled(true);
+        m_pConnectButton->setText(tr("Conectar"));
+        m_pCancelButton->setVisible(true);
+        if (!result.contains(QStringLiteral("user"))) {
+            const QString err = result.value(QStringLiteral("error")).toString();
+            setProfileError(err.contains(QStringLiteral("perfil"), Qt::CaseInsensitive) || err.isEmpty()
+                            ? tr("No encontramos ese perfil. Revisá el usuario o el link.")
+                            : tr("No pudimos verificarlo: %1").arg(err));
+            setStatus(QString());
+            return;
+        }
+        const QJsonObject user = result.value(QStringLiteral("user")).toObject();
+        m_pConfig->setValue(kProfileKey, user.value(QStringLiteral("url")).toString());
+        m_pConfig->setValue(kProfileNameKey, user.value(QStringLiteral("username")).toString());
+        updateProfileButton();
+        m_pCardForm->setVisible(false);
+        m_pCardDoneText->setText(tr("Conectado como @%1").arg(user.value(QStringLiteral("username")).toString()));
+        m_pCardDone->setVisible(true);
+        setStatus(QString());
+        const Page next = m_pendingPage;
+        QTimer::singleShot(1100, this, [this, next]() {
+            if (m_pNav->currentRow() != static_cast<int>(next)) {
+                m_pNav->setCurrentRow(static_cast<int>(next)); // dispara openPage
+            } else {
+                openPage(next);
+            }
+        });
+        return;
     }
     if (result.contains(QStringLiteral("error"))) {
         setStatus(tr("Error: %1").arg(result.value(QStringLiteral("error")).toString()), true);
@@ -1298,12 +1504,13 @@ void DlgSoundCloud::applyStyle() {
             file.close();
         }
     }
+    // Estilos de fabrica + los del archivo, que pisan a los de fabrica
     QString style = kStyleSheet;
     if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         const QString custom = QString::fromUtf8(file.readAll());
         file.close();
-        if (!custom.trimmed().isEmpty()) {
-            style = custom;
+        if (custom.trimmed() != kStyleSheet.trimmed()) {
+            style += QStringLiteral("\n") + custom;
         }
     }
     setStyleSheet(style);

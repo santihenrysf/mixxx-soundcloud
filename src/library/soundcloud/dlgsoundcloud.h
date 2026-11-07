@@ -52,6 +52,8 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
     void slotSearch();
     void slotPlaylistChosen(int index);
     void slotChangeProfile();
+    void slotConnectProfile();
+    void slotCancelProfile();
     void slotListFinished(int exitCode, QProcess::ExitStatus exitStatus);
     void slotDownloadOutput();
     void slotDownloadFinished(int exitCode, QProcess::ExitStatus exitStatus);
@@ -76,6 +78,7 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
     enum class ListKind {
         Tracks,
         Playlists,
+        Profile,
     };
     enum class Page {
         Search,
@@ -110,6 +113,12 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
     TrackPointer trackForUrl(const QString& url);
     void loadArtwork(const QString& trackUrl, const QString& artUrl);
     void setBusy(bool busy);
+    void showProfileCard(bool changing);
+    void hideProfileCard();
+    void setProfileError(const QString& text);
+    void updateProfileButton();
+    void openPage(Page page);
+    static QString normalizeProfile(const QString& input);
     QString styleFile() const;
     void applyStyle();
 
@@ -129,6 +138,16 @@ class DlgSoundCloud : public QWidget, public virtual LibraryView {
     QPushButton* m_pFolderButton;
     QPushButton* m_pOpenFolderButton;
     QPushButton* m_pProfileButton;
+    QWidget* m_pProfileCard;
+    QWidget* m_pCardForm;
+    QWidget* m_pCardDone;
+    QLabel* m_pCardTitle;
+    QLabel* m_pCardDoneText;
+    QLineEdit* m_pProfileEdit;
+    QLabel* m_pProfileError;
+    QPushButton* m_pConnectButton;
+    QPushButton* m_pCancelButton;
+    Page m_pendingPage;
     QLabel* m_pStatusLabel;
     QProgressBar* m_pProgress;
 
